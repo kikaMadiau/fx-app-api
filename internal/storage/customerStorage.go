@@ -1,0 +1,12 @@
+package storage
+
+import (
+	"fx-app-api/internal/domain/customer/entity"
+)
+
+type CustomerStorage interface {
+	Init() error
+	CreateCustomer(customer *entity.Customer) error
+	UpdateCustomer(customer *entity.Customer) error
+	GetCustomer(id int) (*entity.Customer, error)
+}
