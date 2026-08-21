@@ -10,7 +10,7 @@ API Go pour la gestion de transactions de change, avec profils KYC clients, anal
 - Consultation et mise a jour du profil KYC.
 - Recalcul manuel du risque KYC client.
 - Creation de transaction FX avec conversion calculee depuis le taux fixe par le trader.
-- Analyse AML asynchrone apres creation de transaction.
+- Analyse AML/KYC synchrone apres creation de transaction.
 - Creation automatique de `risk_flags` quand une regle AML/KYC est declenchee.
 - Consultation, filtrage, creation manuelle et suppression logique des `risk_flags`.
 - Initialisation automatique des tables PostgreSQL au demarrage.
@@ -118,6 +118,418 @@ Aucune route actuelle ne l'utilise encore. La verification reelle du token est c
 | `GET` | `/risk-flags` | Lister les alertes de risque. |
 | `GET` | `/risk-flags/{id}` | Recuperer une alerte de risque. |
 | `DELETE` | `/risk-flags/{id}` | Supprimer logiquement une alerte de risque. |
+
+## Catalogue Des Requetes JSON
+
+Cette section resume toutes les routes avec leurs payloads. Les routes `GET` et `DELETE` n'ont pas de body JSON.
+
+### `POST /traders`
+
+Body:
+
+```json
+{
+  "name": "Bureau Gombe",
+  "first_name": "Jean",
+  "last_name": "Kabila",
+  "email": "jean@example.com",
+  "phone": "+243810000000",
+  "status": "ACTIVE",
+  "role": "TRADER",
+  "password_hash": "$2a$...",
+  "store_id": 1,
+  "is_active": true
+}
+```
+
+Response `201 Created`:
+
+```json
+{
+  "id": 1,
+  "name": "Bureau Gombe",
+  "first_name": "Jean",
+  "last_name": "Kabila",
+  "email": "jean@example.com",
+  "phone": "+243810000000",
+  "status": "ACTIVE",
+  "created_at": "2026-08-21T12:30:00Z",
+  "updated_at": "2026-08-21T12:30:00Z",
+  "deleted_at": null,
+  "role": "TRADER",
+  "password_hash": "$2a$...",
+  "store_id": 1,
+  "is_active": true
+}
+```
+
+### `GET /traders/{id}`
+
+Body: aucun.
+
+Response `200 OK`: objet `Trader`.
+
+```json
+{
+  "id": 1,
+  "name": "Bureau Gombe",
+  "first_name": "Jean",
+  "last_name": "Kabila",
+  "email": "jean@example.com",
+  "phone": "+243810000000",
+  "status": "ACTIVE",
+  "created_at": "2026-08-21T12:30:00Z",
+  "updated_at": "2026-08-21T12:30:00Z",
+  "deleted_at": null,
+  "role": "TRADER",
+  "password_hash": "$2a$...",
+  "store_id": 1,
+  "is_active": true
+}
+```
+
+### `PUT /traders/{id}`
+
+Body:
+
+```json
+{
+  "name": "Bureau Gombe",
+  "first_name": "Jean",
+  "last_name": "Kabila",
+  "email": "jean@example.com",
+  "phone": "+243810000000",
+  "status": "ACTIVE",
+  "role": "MANAGER",
+  "password_hash": "",
+  "store_id": 1,
+  "is_active": true
+}
+```
+
+Response `200 OK`: objet `Trader`.
+
+### `DELETE /traders/{id}`
+
+Body: aucun.
+
+Response: `204 No Content`.
+
+### `POST /customers`
+
+Body:
+
+```json
+{
+  "full_name": "Grace Hopper",
+  "id_number": "ID-123456",
+  "id_type": "PASSPORT",
+  "phone": "+243820000000",
+  "address": "Kinshasa"
+}
+```
+
+Response `201 Created`:
+
+```json
+{
+  "id": 1,
+  "full_name": "Grace Hopper",
+  "id_number": "ID-123456",
+  "id_type": "PASSPORT",
+  "phone": "+243820000000",
+  "address": "Kinshasa",
+  "created_at": "2026-08-21T12:30:00Z",
+  "updated_at": "2026-08-21T12:30:00Z",
+  "risk_level": "",
+  "risk_score": 0
+}
+```
+
+### `POST /customers/kyc`
+
+Body:
+
+```json
+{
+  "customer": {
+    "full_name": "Grace Hopper",
+    "id_number": "ID-123456",
+    "id_type": "PASSPORT",
+    "phone": "+243820000000",
+    "address": "Kinshasa"
+  },
+  "kyc_profile": {
+    "legal_nature": "INDIVIDUAL",
+    "activity_profile": "BUSINESS",
+    "profession": "Entrepreneur",
+    "employer": "",
+    "company_name": "",
+    "registration_number": "",
+    "source_of_funds": "Business revenue",
+    "purpose_of_operations": "Currency exchange",
+    "expected_volume": 50000,
+    "expected_frequency": 12,
+    "last_verification_date": "2026-08-21T12:30:00Z"
+  }
+}
+```
+
+Response `201 Created`: objet `Customer`.
+
+```json
+{
+  "id": 1,
+  "full_name": "Grace Hopper",
+  "id_number": "ID-123456",
+  "id_type": "PASSPORT",
+  "phone": "+243820000000",
+  "address": "Kinshasa",
+  "created_at": "2026-08-21T12:30:00Z",
+  "updated_at": "2026-08-21T12:30:00Z",
+  "risk_level": "LOW",
+  "risk_score": 20
+}
+```
+
+### `GET /customers/{id}`
+
+Body: aucun.
+
+Response `200 OK`: objet `Customer`.
+
+```json
+{
+  "id": 1,
+  "full_name": "Grace Hopper",
+  "id_number": "ID-123456",
+  "id_type": "PASSPORT",
+  "phone": "+243820000000",
+  "address": "Kinshasa",
+  "created_at": "2026-08-21T12:30:00Z",
+  "updated_at": "2026-08-21T12:30:00Z",
+  "deleted_at": null,
+  "risk_level": "LOW",
+  "risk_score": 20
+}
+```
+
+### `PUT /customers/{id}`
+
+Body:
+
+```json
+{
+  "full_name": "Grace Hopper",
+  "id_number": "ID-123456",
+  "id_type": "NATIONAL_ID",
+  "phone": "+243820000000",
+  "address": "Gombe, Kinshasa"
+}
+```
+
+Response `200 OK`: objet `Customer`.
+
+### `GET /customers/{id}/kyc`
+
+Body: aucun.
+
+Response `200 OK`: objet `CustomerKYCProfile`.
+
+```json
+{
+  "id": 1,
+  "customer_id": 1,
+  "legal_nature": "INDIVIDUAL",
+  "activity_profile": "BUSINESS",
+  "kyc_status": "UNVERIFIED",
+  "profession": "Entrepreneur",
+  "employer": "",
+  "company_name": "",
+  "registration_number": "",
+  "source_of_funds": "Business revenue",
+  "purpose_of_operations": "Currency exchange",
+  "expected_volume": 50000,
+  "expected_frequency": 12,
+  "last_verification_date": "2026-08-21T12:30:00Z",
+  "created_at": "2026-08-21T12:30:00Z",
+  "updated_at": "2026-08-21T12:30:00Z"
+}
+```
+
+### `PUT /customers/{id}/kyc`
+
+Body:
+
+```json
+{
+  "legal_nature": "INDIVIDUAL",
+  "activity_profile": "PROFESSIONAL",
+  "kyc_status": "VERIFIED",
+  "profession": "Consultant",
+  "employer": "Self-employed",
+  "company_name": "",
+  "registration_number": "",
+  "source_of_funds": "Consulting income",
+  "purpose_of_operations": "FX operations",
+  "expected_volume": 25000,
+  "expected_frequency": 8,
+  "last_verification_date": "2026-08-21T12:30:00Z"
+}
+```
+
+Response `200 OK`: profil KYC mis a jour.
+
+### `POST /customers/{id}/kyc/reassess`
+
+Body: aucun.
+
+Response `200 OK`: objet `Customer` apres recalcul du risque.
+
+```json
+{
+  "id": 1,
+  "full_name": "Grace Hopper",
+  "id_number": "ID-123456",
+  "id_type": "NATIONAL_ID",
+  "phone": "+243820000000",
+  "address": "Gombe, Kinshasa",
+  "created_at": "2026-08-21T12:30:00Z",
+  "updated_at": "2026-08-21T12:35:00Z",
+  "deleted_at": null,
+  "risk_level": "LOW",
+  "risk_score": 0
+}
+```
+
+### `POST /transactions`
+
+Body:
+
+```json
+{
+  "amount": 12500.75,
+  "currency": "USD",
+  "target_currency": "CDF",
+  "type": "deposit",
+  "rate": 2845.5,
+  "status": "PENDING",
+  "trader_id": 1,
+  "customer_id": 1
+}
+```
+
+Response `201 Created`: objet `Transaction` apres conversion et analyse AML/KYC synchrone.
+
+```json
+{
+  "id": 10,
+  "amount": 12500.75,
+  "currency": "USD",
+  "target_currency": "CDF",
+  "type": "deposit",
+  "rate": 2845.5,
+  "converted_amount": 35571408.75,
+  "risk_level": "MEDIUM",
+  "risk_score": 30,
+  "status": "PENDING",
+  "created_at": "2026-08-21T12:30:00Z",
+  "updated_at": "2026-08-21T12:30:01Z",
+  "deleted_at": null,
+  "trader_id": 1,
+  "customer_id": 1
+}
+```
+
+### `GET /transactions/{id}`
+
+Body: aucun.
+
+Response `200 OK`: objet `Transaction`.
+
+### `POST /risk-flags`
+
+Body:
+
+```json
+{
+  "flag": "MANUAL_REVIEW",
+  "reason": "Document KYC a verifier",
+  "score": 15,
+  "level": "MEDIUM",
+  "transaction_id": 10,
+  "trader_id": 1,
+  "customer_id": 1
+}
+```
+
+Response `201 Created`:
+
+```json
+{
+  "id": 3,
+  "flag": "MANUAL_REVIEW",
+  "reason": "Document KYC a verifier",
+  "score": 15,
+  "level": "MEDIUM",
+  "transaction_id": 10,
+  "trader_id": 1,
+  "customer_id": 1,
+  "created_at": "2026-08-21T12:30:00Z",
+  "updated_at": "2026-08-21T12:30:00Z",
+  "deleted_at": null
+}
+```
+
+### `GET /risk-flags`
+
+Body: aucun.
+
+Query params optionnels:
+
+- `transaction_id`
+- `trader_id`
+- `customer_id`
+
+Exemples:
+
+```http
+GET /risk-flags
+GET /risk-flags?transaction_id=10
+GET /risk-flags?customer_id=1&trader_id=1
+```
+
+Response `200 OK`:
+
+```json
+[
+  {
+    "id": 3,
+    "flag": "MANUAL_REVIEW",
+    "reason": "Document KYC a verifier",
+    "score": 15,
+    "level": "MEDIUM",
+    "transaction_id": 10,
+    "trader_id": 1,
+    "customer_id": 1,
+    "created_at": "2026-08-21T12:30:00Z",
+    "updated_at": "2026-08-21T12:30:00Z",
+    "deleted_at": null
+  }
+]
+```
+
+### `GET /risk-flags/{id}`
+
+Body: aucun.
+
+Response `200 OK`: objet `RiskFlag`.
+
+### `DELETE /risk-flags/{id}`
+
+Body: aucun.
+
+Response: `204 No Content`.
 
 ## Traders
 
@@ -458,7 +870,7 @@ Reponse `201 Created`:
 }
 ```
 
-Important: l'analyse AML/KYC est lancee de maniere asynchrone. La reponse initiale peut donc ne pas contenir le `risk_level` et le `risk_score` finaux.
+Important: l'analyse AML/KYC est executee avant la reponse. La reponse `201 Created` contient donc le `risk_level` et le `risk_score` transactionnels finalises.
 
 ### Recuperer Une Transaction
 
@@ -466,7 +878,7 @@ Important: l'analyse AML/KYC est lancee de maniere asynchrone. La reponse initia
 GET /transactions/{id}
 ```
 
-Reponse `200 OK`: objet `Transaction`, avec `risk_level` et `risk_score` si l'analyse asynchrone est deja terminee.
+Reponse `200 OK`: objet `Transaction`, avec `risk_level` et `risk_score`.
 
 ## Risk Flags
 
@@ -549,7 +961,7 @@ Reponse `204 No Content`. La suppression est logique via `deleted_at`.
 
 ## Analyse AML/KYC
 
-`RiskService.AnalyzeTransactionAndCustomer` est lance apres chaque `POST /transactions`.
+`RiskService.AnalyzeTransactionAndCustomer` est execute pendant chaque `POST /transactions`, apres la persistence de la transaction et avant la reponse HTTP.
 
 Flux:
 
@@ -710,7 +1122,7 @@ GOCACHE=/private/tmp/fx-app-api-go-build go test ./...
 
 ## Limitations Actuelles
 
-- L'analyse AML/KYC post-transaction est asynchrone: la reponse `POST /transactions` peut arriver avant la mise a jour du score final.
+- `POST /transactions` persiste la transaction avant l'analyse AML/KYC; une erreur d'analyse apres insertion n'est pas encore rollbackee dans une transaction SQL.
 - Les regles AML sont codees en dur, pas encore configurees en base ou fichier.
 - `RuleConfig.Enabled` existe mais n'est pas encore utilise pour desactiver une regle.
 - Pas encore de screening sanctions, PEP, listes noires ou adverse media.

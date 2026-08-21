@@ -431,8 +431,10 @@ func (s *ApiServer) handleCreateTransaction(w http.ResponseWriter, r *http.Reque
 		return fmt.Errorf("failed to create transaction: %w", err)
 	}
 
-	// 2. Déclencher l'analyse de risque de manière asynchrone
-	go s.riskService.AnalyzeTransactionAndCustomer(tx)
+	// 2. Déclencher l'analyse de risque avant de répondre au client
+	if err := s.riskService.AnalyzeTransactionAndCustomer(tx); err != nil {
+		return fmt.Errorf("failed to analyze transaction risk: %w", err)
+	}
 
 	return WriteJson(w, http.StatusCreated, tx)
 }
