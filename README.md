@@ -5,6 +5,7 @@ API Go pour la gestion de transactions de change, avec profils KYC clients, anal
 ## Fonctionnalites
 
 - Gestion des cambistes/traders.
+- Authentification trader avec JWT RS256.
 - Gestion des clients.
 - Creation de client avec profil KYC initial.
 - Consultation et mise a jour du profil KYC.
@@ -89,18 +90,72 @@ Statuts utilises:
 
 ## Authentification
 
-Le helper `MakeProtectedHttpHandleFunc` existe et attend:
+La route d'authentification trader est publique:
+
+```http
+POST /auth/trader/login
+Content-Type: application/json
+```
+
+```json
+{
+  "email": "jean@example.com",
+  "password": "secret-password"
+}
+```
+
+Reponse `200 OK`:
+
+```json
+{
+  "access_token": "<jwt>",
+  "token_type": "Bearer",
+  "expires_in": 86400,
+  "trader": {
+    "id": 1,
+    "name": "Bureau Gombe",
+    "first_name": "Jean",
+    "last_name": "Kabila",
+    "email": "jean@example.com",
+    "phone": "+243810000000",
+    "status": "ACTIVE",
+    "created_at": "2026-08-21T12:30:00Z",
+    "updated_at": "2026-08-21T12:30:00Z",
+    "deleted_at": null,
+    "role": "TRADER",
+    "store_id": 1,
+    "is_active": true
+  }
+}
+```
+
+Les routes metier protegees attendent ensuite:
 
 ```http
 Authorization: Bearer <token>
 ```
 
-Aucune route actuelle ne l'utilise encore. La verification reelle du token est commentee.
+Le token est signe en `RS256` avec les cles:
+
+| Variable | Defaut | Description |
+| --- | --- | --- |
+| `JWT_PRIVATE_KEY_PATH` | `jwt/private.pem` | Cle privee utilisee pour signer les tokens. |
+| `JWT_PUBLIC_KEY_PATH` | `jwt/public.pem` | Cle publique utilisee pour verifier les tokens. |
+
+Expiration actuelle du token: 24 heures.
+
+Routes publiques:
+
+- `POST /auth/trader/login`
+- `POST /traders`
+
+Toutes les autres routes exposees par `server.go` passent par la verification du bearer token.
 
 ## Routes
 
 | Methode | Route | Description |
 | --- | --- | --- |
+| `POST` | `/auth/trader/login` | Authentifier un trader et obtenir un JWT. |
 | `POST` | `/traders` | Creer un cambiste. |
 | `GET` | `/traders/{id}` | Recuperer un cambiste. |
 | `PUT` | `/traders/{id}` | Mettre a jour un cambiste. |
@@ -136,7 +191,7 @@ Body:
   "phone": "+243810000000",
   "status": "ACTIVE",
   "role": "TRADER",
-  "password_hash": "$2a$...",
+  "password": "secret-password",
   "store_id": 1,
   "is_active": true
 }
@@ -157,9 +212,44 @@ Response `201 Created`:
   "updated_at": "2026-08-21T12:30:00Z",
   "deleted_at": null,
   "role": "TRADER",
-  "password_hash": "$2a$...",
   "store_id": 1,
   "is_active": true
+}
+```
+
+### `POST /auth/trader/login`
+
+Body:
+
+```json
+{
+  "email": "jean@example.com",
+  "password": "secret-password"
+}
+```
+
+Response `200 OK`:
+
+```json
+{
+  "access_token": "<jwt>",
+  "token_type": "Bearer",
+  "expires_in": 86400,
+  "trader": {
+    "id": 1,
+    "name": "Bureau Gombe",
+    "first_name": "Jean",
+    "last_name": "Kabila",
+    "email": "jean@example.com",
+    "phone": "+243810000000",
+    "status": "ACTIVE",
+    "created_at": "2026-08-21T12:30:00Z",
+    "updated_at": "2026-08-21T12:30:00Z",
+    "deleted_at": null,
+    "role": "TRADER",
+    "store_id": 1,
+    "is_active": true
+  }
 }
 ```
 
@@ -182,7 +272,6 @@ Response `200 OK`: objet `Trader`.
   "updated_at": "2026-08-21T12:30:00Z",
   "deleted_at": null,
   "role": "TRADER",
-  "password_hash": "$2a$...",
   "store_id": 1,
   "is_active": true
 }
@@ -201,7 +290,6 @@ Body:
   "phone": "+243810000000",
   "status": "ACTIVE",
   "role": "MANAGER",
-  "password_hash": "",
   "store_id": 1,
   "is_active": true
 }
@@ -549,7 +637,7 @@ Content-Type: application/json
   "phone": "+243810000000",
   "status": "ACTIVE",
   "role": "TRADER",
-  "password_hash": "$2a$...",
+  "password": "secret-password",
   "store_id": 1,
   "is_active": true
 }
@@ -558,7 +646,7 @@ Content-Type: application/json
 Champs obligatoires:
 
 - `email`
-- `password_hash`
+- `password` ou `password_hash`
 
 Reponse `201 Created`:
 
@@ -575,7 +663,6 @@ Reponse `201 Created`:
   "updated_at": "2026-08-21T12:30:00Z",
   "deleted_at": null,
   "role": "TRADER",
-  "password_hash": "$2a$...",
   "store_id": 1,
   "is_active": true
 }
@@ -596,7 +683,7 @@ PUT /traders/{id}
 Content-Type: application/json
 ```
 
-Utilise le meme payload que la creation. Le handler ne modifie pas `password_hash`.
+Utilise le meme payload que la creation. Le handler ne modifie pas le mot de passe.
 
 Champs obligatoires:
 
@@ -1039,7 +1126,7 @@ Ce recalcul manuel est plus simple que l'analyse AML post-transaction: il ne lan
 | `phone` | `VARCHAR(50)` | Telephone. |
 | `status` | `VARCHAR(50)` | Statut. |
 | `role` | `VARCHAR(50)` | Role. |
-| `password_hash` | `VARCHAR(255)` | Obligatoire. |
+| `password_hash` | `VARCHAR(255)` | Hash bcrypt du mot de passe, obligatoire. |
 | `store_id` | `INT` | Point de vente. |
 | `is_active` | `BOOLEAN` | Defaut `TRUE`. |
 | `created_at`, `updated_at`, `deleted_at` | `TIMESTAMPTZ` | Timestamps. |
@@ -1128,6 +1215,6 @@ GOCACHE=/private/tmp/fx-app-api-go-build go test ./...
 - Pas encore de screening sanctions, PEP, listes noires ou adverse media.
 - Pas encore de workflow d'investigation complet pour les alertes (`OPEN`, `IN_REVIEW`, `RESOLVED`, `FALSE_POSITIVE`).
 - Pas encore de gestion documentaire KYC: documents, expiration, verification de piece, justificatif d'adresse.
-- Pas encore d'authentification/RBAC actif sur les routes.
+- Authentification JWT active, mais pas encore de RBAC par role.
 - Les erreurs de contraintes SQL sont encore renvoyees en `500`.
 - Les formats metier de `currency`, `status`, `type`, `role` ne sont pas encore normalises par enum stricte.

@@ -13,7 +13,7 @@ type Trader struct {
 	CreatedAt    time.Time  `json:"created_at"`
 	UpdatedAt    time.Time  `json:"updated_at"`
 	DeletedAt    *time.Time `json:"deleted_at"` // Utilise un pointeur pour les timestamps nullables
-	Role         string     `json:"role"`
+	Roles        string     `json:"roles"`
 	PasswordHash string     `json:"password_hash"` // Renommé de Password pour refléter le hachage
 	//Store     Store  `json:"store"`
 	StoreId int `json:"store_id"`

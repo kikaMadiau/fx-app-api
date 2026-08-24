@@ -9,17 +9,17 @@ import (
 )
 
 // traderRepository est l'implémentation concrète de storage.TraderStorage.
-type traderRepository struct {
+type TraderRepository struct {
 	store *storage.PostgresStore
 }
 
 // NewTraderRepository crée une nouvelle instance qui implémente storage.TraderStorage.
 func NewTraderRepository(store *storage.PostgresStore) storage.TraderStorage {
-	return &traderRepository{store: store}
+	return &TraderRepository{store: store}
 }
 
 // Init crée la table 'traders' si elle n'existe pas.
-func (r *traderRepository) Init() error {
+func (r *TraderRepository) Init() error {
 	createTableSQL := `
 		CREATE TABLE IF NOT EXISTS traders (
 			id SERIAL PRIMARY KEY,
@@ -43,7 +43,7 @@ func (r *traderRepository) Init() error {
 }
 
 // CreateTrader insère un nouveau cambiste dans la base de données.
-func (r *traderRepository) CreateTrader(trader *entity.Trader) error {
+func (r *TraderRepository) CreateTrader(trader *entity.Trader) error {
 	query := `
 		INSERT INTO traders (
 			name, first_name, last_name, email, phone, status, role, password_hash, store_id, is_active, created_at, updated_at
@@ -61,7 +61,7 @@ func (r *traderRepository) CreateTrader(trader *entity.Trader) error {
 		trader.Email,
 		trader.Phone,
 		trader.Status,
-		trader.Role,
+		trader.Roles,
 		trader.PasswordHash,
 		trader.StoreId,
 		trader.IsActive,
@@ -77,7 +77,7 @@ func (r *traderRepository) CreateTrader(trader *entity.Trader) error {
 }
 
 // GetTrader récupère un cambiste par son ID.
-func (r *traderRepository) GetTrader(id int) (*entity.Trader, error) {
+func (r *TraderRepository) GetTrader(id int) (*entity.Trader, error) {
 	query := `
 		SELECT id, COALESCE(name, ''), COALESCE(first_name, ''), COALESCE(last_name, ''),
 		       email, COALESCE(phone, ''), COALESCE(status, ''), COALESCE(role, ''),
@@ -95,7 +95,7 @@ func (r *traderRepository) GetTrader(id int) (*entity.Trader, error) {
 		&trader.Email,
 		&trader.Phone,
 		&trader.Status,
-		&trader.Role,
+		&trader.Roles,
 		&trader.PasswordHash,
 		&trader.StoreId,
 		&trader.IsActive,
@@ -115,9 +115,9 @@ func (r *traderRepository) GetTrader(id int) (*entity.Trader, error) {
 }
 
 // FindOrCreateTrader trouve un cambiste par email ou le crée s'il n'existe pas.
-func (r *traderRepository) FindOrCreateTrader(trader *entity.Trader) (*entity.Trader, error) {
+func (r *TraderRepository) FindOrCreateTrader(trader *entity.Trader) (*entity.Trader, error) {
 	// 1. Essayer de trouver le cambiste par email.
-	existingTrader, err := r.getTraderByEmail(trader.Email)
+	existingTrader, err := r.GetTraderByEmail(trader.Email)
 	if err != nil {
 		// Si l'erreur n'est pas "non trouvé", on la retourne.
 		if err.Error() != fmt.Sprintf("trader with email %s not found", trader.Email) {
@@ -139,8 +139,8 @@ func (r *traderRepository) FindOrCreateTrader(trader *entity.Trader) (*entity.Tr
 	return trader, nil
 }
 
-// getTraderByEmail est une méthode privée pour récupérer un cambiste par son email.
-func (r *traderRepository) getTraderByEmail(email string) (*entity.Trader, error) {
+// GetTraderByEmail récupère un cambiste par son email.
+func (r *TraderRepository) GetTraderByEmail(email string) (*entity.Trader, error) {
 	query := `
 		SELECT id, COALESCE(name, ''), COALESCE(first_name, ''), COALESCE(last_name, ''),
 		       email, COALESCE(phone, ''), COALESCE(status, ''), COALESCE(role, ''),
@@ -158,7 +158,7 @@ func (r *traderRepository) getTraderByEmail(email string) (*entity.Trader, error
 		&trader.Email,
 		&trader.Phone,
 		&trader.Status,
-		&trader.Role,
+		&trader.Roles,
 		&trader.PasswordHash,
 		&trader.StoreId,
 		&trader.IsActive,
@@ -178,7 +178,7 @@ func (r *traderRepository) getTraderByEmail(email string) (*entity.Trader, error
 }
 
 // UpdateTrader met à jour les informations d'un cambiste.
-func (r *traderRepository) UpdateTrader(trader *entity.Trader) error {
+func (r *TraderRepository) UpdateTrader(trader *entity.Trader) error {
 	query := `
 		UPDATE traders 
 		SET name = $1, first_name = $2, last_name = $3, email = $4, phone = $5, 
@@ -194,7 +194,7 @@ func (r *traderRepository) UpdateTrader(trader *entity.Trader) error {
 		trader.Email,
 		trader.Phone,
 		trader.Status,
-		trader.Role,
+		trader.Roles,
 		trader.StoreId,
 		trader.IsActive,
 		trader.UpdatedAt,
@@ -204,7 +204,7 @@ func (r *traderRepository) UpdateTrader(trader *entity.Trader) error {
 }
 
 // DeleteTrader effectue une suppression logique (soft delete) d'un cambiste.
-func (r *traderRepository) DeleteTrader(id int) error {
+func (r *TraderRepository) DeleteTrader(id int) error {
 	query := `UPDATE traders SET deleted_at = $1 WHERE id = $2`
 	_, err := r.store.DB().Exec(query, time.Now(), id)
 	return err

@@ -8,13 +8,16 @@ import (
 	riskflagentity "fx-app-api/internal/domain/riskflag/entity"
 	riskservice "fx-app-api/internal/domain/riskflag/service"
 	traderentity "fx-app-api/internal/domain/trader/entity"
+	traderauthservice "fx-app-api/internal/domain/trader/traderservices"
 	transactionentity "fx-app-api/internal/domain/transaction/entity"
 	transactionservice "fx-app-api/internal/domain/transaction/service"
 	"fx-app-api/internal/storage"
+	tokenservice "fx-app-api/internal/utils/services"
 	"log"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type ApiServer struct {
@@ -25,30 +28,33 @@ type ApiServer struct {
 	riskFlagStore    storage.RiskFlagStorage
 	riskService      *riskservice.RiskService
 	customerService  *customerservice.CustomerService
+	authService      *traderauthservice.AuthService
 }
 
 func (s *ApiServer) Start() error {
 	// Définir les routes de l'API
+	http.HandleFunc("POST /auth/trader/login", MakeHttpHandleFunc(s.handleTraderLogin))
+
 	http.HandleFunc("POST /traders", MakeHttpHandleFunc(s.handleCreateTrader))
-	http.HandleFunc("GET /traders/{id}", MakeHttpHandleFunc(s.handleGetTrader))
-	http.HandleFunc("PUT /traders/{id}", MakeHttpHandleFunc(s.handleUpdateTrader))
-	http.HandleFunc("DELETE /traders/{id}", MakeHttpHandleFunc(s.handleDeleteTrader))
+	http.HandleFunc("GET /traders/{id}", MakeProtectedHttpHandleFunc(s.handleGetTrader))
+	http.HandleFunc("PUT /traders/{id}", MakeProtectedHttpHandleFunc(s.handleUpdateTrader))
+	http.HandleFunc("DELETE /traders/{id}", MakeProtectedHttpHandleFunc(s.handleDeleteTrader))
 
-	http.HandleFunc("POST /customers", MakeHttpHandleFunc(s.handleCreateCustomer))
-	http.HandleFunc("POST /customers/kyc", MakeHttpHandleFunc(s.handleCreateCustomerWithKYC))
-	http.HandleFunc("GET /customers/{id}", MakeHttpHandleFunc(s.handleGetCustomer))
-	http.HandleFunc("PUT /customers/{id}", MakeHttpHandleFunc(s.handleUpdateCustomer))
-	http.HandleFunc("GET /customers/{id}/kyc", MakeHttpHandleFunc(s.handleGetKYCProfile))
-	http.HandleFunc("PUT /customers/{id}/kyc", MakeHttpHandleFunc(s.handleUpdateKYCProfile))
-	http.HandleFunc("POST /customers/{id}/kyc/reassess", MakeHttpHandleFunc(s.handleTriggerKYCReassessment))
+	http.HandleFunc("POST /customers", MakeProtectedHttpHandleFunc(s.handleCreateCustomer))
+	http.HandleFunc("POST /customers/kyc", MakeProtectedHttpHandleFunc(s.handleCreateCustomerWithKYC))
+	http.HandleFunc("GET /customers/{id}", MakeProtectedHttpHandleFunc(s.handleGetCustomer))
+	http.HandleFunc("PUT /customers/{id}", MakeProtectedHttpHandleFunc(s.handleUpdateCustomer))
+	http.HandleFunc("GET /customers/{id}/kyc", MakeProtectedHttpHandleFunc(s.handleGetKYCProfile))
+	http.HandleFunc("PUT /customers/{id}/kyc", MakeProtectedHttpHandleFunc(s.handleUpdateKYCProfile))
+	http.HandleFunc("POST /customers/{id}/kyc/reassess", MakeProtectedHttpHandleFunc(s.handleTriggerKYCReassessment))
 
-	http.HandleFunc("POST /transactions", MakeHttpHandleFunc(s.handleCreateTransaction))
-	http.HandleFunc("GET /transactions/{id}", MakeHttpHandleFunc(s.handleGetTransaction))
+	http.HandleFunc("POST /transactions", MakeProtectedHttpHandleFunc(s.handleCreateTransaction))
+	http.HandleFunc("GET /transactions/{id}", MakeProtectedHttpHandleFunc(s.handleGetTransaction))
 
-	http.HandleFunc("POST /risk-flags", MakeHttpHandleFunc(s.handleCreateRiskFlag))
-	http.HandleFunc("GET /risk-flags", MakeHttpHandleFunc(s.handleListRiskFlags))
-	http.HandleFunc("GET /risk-flags/{id}", MakeHttpHandleFunc(s.handleGetRiskFlag))
-	http.HandleFunc("DELETE /risk-flags/{id}", MakeHttpHandleFunc(s.handleDeleteRiskFlag))
+	http.HandleFunc("POST /risk-flags", MakeProtectedHttpHandleFunc(s.handleCreateRiskFlag))
+	http.HandleFunc("GET /risk-flags", MakeProtectedHttpHandleFunc(s.handleListRiskFlags))
+	http.HandleFunc("GET /risk-flags/{id}", MakeProtectedHttpHandleFunc(s.handleGetRiskFlag))
+	http.HandleFunc("DELETE /risk-flags/{id}", MakeProtectedHttpHandleFunc(s.handleDeleteRiskFlag))
 
 	log.Println("API server running on", s.listenAddr)
 
@@ -106,13 +112,17 @@ func MakeProtectedHttpHandleFunc(f ApiFunc) http.HandlerFunc {
 			return
 		}
 
-		/*if err := service.VerifyToken(tokenString); err != nil {
+		if err := tokenservice.VerifyToken(tokenString); err != nil {
 			WriteJson(w, http.StatusUnauthorized, ApiError{Message: "Invalid token"})
 			return
-		}*/
+		}
 
 		if err := f(w, r); err != nil {
-			WriteJson(w, http.StatusInternalServerError, ApiError{Message: err.Error()})
+			statusCode := http.StatusInternalServerError
+			if httpErr, ok := err.(*HTTPError); ok {
+				statusCode = httpErr.StatusCode
+			}
+			WriteJson(w, statusCode, ApiError{Message: err.Error()})
 		}
 	}
 }
@@ -134,7 +144,57 @@ func NewServer(
 		riskFlagStore:    riskFlagStore,
 		riskService:      riskService,
 		customerService:  customerService,
+		authService:      traderauthservice.NewAuthService(traderStore),
 	}
+}
+
+// --- Handlers d'Authentification ---
+
+type TraderLoginRequest struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+type TraderLoginResponse struct {
+	AccessToken string         `json:"access_token"`
+	TokenType   string         `json:"token_type"`
+	ExpiresIn   int            `json:"expires_in"`
+	Trader      TraderResponse `json:"trader"`
+}
+
+type TraderResponse struct {
+	ID        int        `json:"id"`
+	Name      string     `json:"name"`
+	FirstName string     `json:"first_name"`
+	LastName  string     `json:"last_name"`
+	Email     string     `json:"email"`
+	Phone     string     `json:"phone"`
+	Status    string     `json:"status"`
+	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt time.Time  `json:"updated_at"`
+	DeletedAt *time.Time `json:"deleted_at"`
+	Role      string     `json:"role"`
+	StoreID   int        `json:"store_id"`
+	IsActive  bool       `json:"is_active"`
+}
+
+func (s *ApiServer) handleTraderLogin(w http.ResponseWriter, r *http.Request) error {
+	var req TraderLoginRequest
+	if err := decodeJSON(r, &req); err != nil {
+		return badRequest("invalid request body", err)
+	}
+
+	result, err := s.authService.AuthenticateTrader(req.Email, req.Password)
+	if err != nil {
+		return &HTTPError{StatusCode: http.StatusUnauthorized, Message: err.Error()}
+	}
+
+	return WriteJson(w, http.StatusOK, TraderLoginResponse{
+		AccessToken: result.Token,
+		TokenType:   "Bearer",
+		ExpiresIn:   86400,
+		Trader:      traderResponse(result.Trader),
+	})
 }
 
 // --- Handlers de Trader ---
@@ -147,6 +207,7 @@ type UpsertTraderRequest struct {
 	Phone        string `json:"phone"`
 	Status       string `json:"status"`
 	Role         string `json:"role"`
+	Password     string `json:"password"`
 	PasswordHash string `json:"password_hash"`
 	StoreID      int    `json:"store_id"`
 	IsActive     bool   `json:"is_active"`
@@ -160,8 +221,15 @@ func (s *ApiServer) handleCreateTrader(w http.ResponseWriter, r *http.Request) e
 	if strings.TrimSpace(req.Email) == "" {
 		return badRequest("email is required", nil)
 	}
-	if strings.TrimSpace(req.PasswordHash) == "" {
-		return badRequest("password_hash is required", nil)
+	if strings.TrimSpace(req.Password) == "" && strings.TrimSpace(req.PasswordHash) == "" {
+		return badRequest("password is required", nil)
+	}
+	if strings.TrimSpace(req.Password) != "" {
+		passwordHash, err := traderauthservice.HashPassword(req.Password)
+		if err != nil {
+			return badRequest("invalid password", err)
+		}
+		req.PasswordHash = passwordHash
 	}
 
 	trader := traderFromRequest(req)
@@ -169,7 +237,7 @@ func (s *ApiServer) handleCreateTrader(w http.ResponseWriter, r *http.Request) e
 		return fmt.Errorf("failed to create trader: %w", err)
 	}
 
-	return WriteJson(w, http.StatusCreated, trader)
+	return WriteJson(w, http.StatusCreated, traderResponse(trader))
 }
 
 func (s *ApiServer) handleGetTrader(w http.ResponseWriter, r *http.Request) error {
@@ -183,7 +251,7 @@ func (s *ApiServer) handleGetTrader(w http.ResponseWriter, r *http.Request) erro
 		return notFound(err.Error())
 	}
 
-	return WriteJson(w, http.StatusOK, trader)
+	return WriteJson(w, http.StatusOK, traderResponse(trader))
 }
 
 func (s *ApiServer) handleUpdateTrader(w http.ResponseWriter, r *http.Request) error {
@@ -211,7 +279,7 @@ func (s *ApiServer) handleUpdateTrader(w http.ResponseWriter, r *http.Request) e
 	existingTrader.Email = strings.TrimSpace(req.Email)
 	existingTrader.Phone = req.Phone
 	existingTrader.Status = req.Status
-	existingTrader.Role = req.Role
+	existingTrader.Roles = req.Role
 	existingTrader.StoreId = req.StoreID
 	existingTrader.IsActive = req.IsActive
 
@@ -219,7 +287,7 @@ func (s *ApiServer) handleUpdateTrader(w http.ResponseWriter, r *http.Request) e
 		return fmt.Errorf("failed to update trader: %w", err)
 	}
 
-	return WriteJson(w, http.StatusOK, existingTrader)
+	return WriteJson(w, http.StatusOK, traderResponse(existingTrader))
 }
 
 func (s *ApiServer) handleDeleteTrader(w http.ResponseWriter, r *http.Request) error {
@@ -567,10 +635,28 @@ func traderFromRequest(req UpsertTraderRequest) *traderentity.Trader {
 		Email:        strings.TrimSpace(req.Email),
 		Phone:        req.Phone,
 		Status:       req.Status,
-		Role:         req.Role,
+		Roles:        req.Role,
 		PasswordHash: req.PasswordHash,
 		StoreId:      req.StoreID,
 		IsActive:     req.IsActive,
+	}
+}
+
+func traderResponse(trader *traderentity.Trader) TraderResponse {
+	return TraderResponse{
+		ID:        trader.Id,
+		Name:      trader.Name,
+		FirstName: trader.FirstName,
+		LastName:  trader.LastName,
+		Email:     trader.Email,
+		Phone:     trader.Phone,
+		Status:    trader.Status,
+		CreatedAt: trader.CreatedAt,
+		UpdatedAt: trader.UpdatedAt,
+		DeletedAt: trader.DeletedAt,
+		Role:      trader.Roles,
+		StoreID:   trader.StoreId,
+		IsActive:  trader.IsActive,
 	}
 }
 

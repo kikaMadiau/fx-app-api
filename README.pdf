@@ -1,0 +1,2618 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>
+endobj
+2 0 obj
+<< /Length 2106 >>
+stream
+BT
+/F1 8.5 Tf
+50 800 Td
+12 TL
+(# FX App API) Tj
+T*
+() Tj
+T*
+(API Go pour la gestion de transactions de change, avec profils KYC clients, analyse AML/KYC, ) Tj
+T*
+(scoring de risque et alertes `risk_flags`.) Tj
+T*
+() Tj
+T*
+(## Fonctionnalites) Tj
+T*
+() Tj
+T*
+(- Gestion des cambistes/traders.) Tj
+T*
+(- Gestion des clients.) Tj
+T*
+(- Creation de client avec profil KYC initial.) Tj
+T*
+(- Consultation et mise a jour du profil KYC.) Tj
+T*
+(- Recalcul manuel du risque KYC client.) Tj
+T*
+(- Creation de transaction FX avec conversion calculee depuis le taux fixe par le trader.) Tj
+T*
+(- Analyse AML/KYC synchrone apres creation de transaction.) Tj
+T*
+(- Creation automatique de `risk_flags` quand une regle AML/KYC est declenchee.) Tj
+T*
+(- Consultation, filtrage, creation manuelle et suppression logique des `risk_flags`.) Tj
+T*
+(- Initialisation automatique des tables PostgreSQL au demarrage.) Tj
+T*
+() Tj
+T*
+(## Stack) Tj
+T*
+() Tj
+T*
+(- Go `1.26.2`) Tj
+T*
+(- PostgreSQL) Tj
+T*
+(- Driver SQL `github.com/lib/pq`) Tj
+T*
+(- Serveur HTTP natif `net/http`) Tj
+T*
+(- Port par defaut `8080`) Tj
+T*
+() Tj
+T*
+(## Demarrage) Tj
+T*
+() Tj
+T*
+(```bash) Tj
+T*
+(make run) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(Equivalent:) Tj
+T*
+() Tj
+T*
+(```bash) Tj
+T*
+(go build -o bin/fx-app ./cmd) Tj
+T*
+(./bin/fx-app) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(Au demarrage, l'application:) Tj
+T*
+() Tj
+T*
+(1. charge `.env` si le fichier existe;) Tj
+T*
+(2. ouvre la connexion PostgreSQL;) Tj
+T*
+(3. cree la base cible si elle n'existe pas;) Tj
+T*
+(4. initialise les tables;) Tj
+T*
+(5. expose l'API sur `http://localhost:8080`.) Tj
+T*
+() Tj
+T*
+(## Configuration) Tj
+T*
+() Tj
+T*
+(`DATABASE_URL` est prioritaire si elle est definie. Sinon l'application compose une chaine de ) Tj
+T*
+(connexion avec les variables suivantes.) Tj
+T*
+() Tj
+T*
+(| Variable | Defaut | Description |) Tj
+T*
+(| --- | --- | --- |) Tj
+T*
+(| `DATABASE_URL` | vide | URL PostgreSQL complete. |) Tj
+T*
+(| `DB_HOST` | `localhost` | Hote PostgreSQL. |) Tj
+T*
+(| `DB_PORT` | `5432` | Port PostgreSQL. |) Tj
+T*
+(| `DB_USER` | utilisateur systeme courant | Utilisateur PostgreSQL. |) Tj
+T*
+ET
+endstream
+endobj
+3 0 obj
+<< /Type /Page /Parent 42 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 2 0 R >>
+endobj
+4 0 obj
+<< /Length 2152 >>
+stream
+BT
+/F1 8.5 Tf
+50 800 Td
+12 TL
+(| `DB_PASSWORD` | vide | Mot de passe PostgreSQL. |) Tj
+T*
+(| `DB_NAME` | `forex_trader_kyc_db` | Nom de la base applicative. |) Tj
+T*
+(| `DB_SSLMODE` | `disable` | Mode SSL PostgreSQL. |) Tj
+T*
+() Tj
+T*
+(Exemple `.env`:) Tj
+T*
+() Tj
+T*
+(```env) Tj
+T*
+(DB_HOST=localhost) Tj
+T*
+(DB_PORT=5432) Tj
+T*
+(DB_USER=postgres) Tj
+T*
+(DB_PASSWORD=postgres) Tj
+T*
+(DB_NAME=forex_trader_kyc_db) Tj
+T*
+(DB_SSLMODE=disable) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(## Format Des Erreurs) Tj
+T*
+() Tj
+T*
+(Les erreurs HTTP sont renvoyees en JSON:) Tj
+T*
+() Tj
+T*
+(```json) Tj
+T*
+({) Tj
+T*
+(  "message": "description de l'erreur") Tj
+T*
+(}) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(Statuts utilises:) Tj
+T*
+() Tj
+T*
+(| Statut | Cas |) Tj
+T*
+(| --- | --- |) Tj
+T*
+(| `400 Bad Request` | JSON invalide, id invalide, champ obligatoire absent. |) Tj
+T*
+(| `404 Not Found` | Ressource introuvable sur les routes de lecture/suppression. |) Tj
+T*
+(| `500 Internal Server Error` | Erreur repository, contrainte SQL, erreur de persistence ou ) Tj
+T*
+(erreur metier non mappee. |) Tj
+T*
+() Tj
+T*
+(## Authentification) Tj
+T*
+() Tj
+T*
+(Le helper `MakeProtectedHttpHandleFunc` existe et attend:) Tj
+T*
+() Tj
+T*
+(```http) Tj
+T*
+(Authorization: Bearer <token>) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(Aucune route actuelle ne l'utilise encore. La verification reelle du token est commentee.) Tj
+T*
+() Tj
+T*
+(## Routes) Tj
+T*
+() Tj
+T*
+(| Methode | Route | Description |) Tj
+T*
+(| --- | --- | --- |) Tj
+T*
+(| `POST` | `/traders` | Creer un cambiste. |) Tj
+T*
+(| `GET` | `/traders/{id}` | Recuperer un cambiste. |) Tj
+T*
+(| `PUT` | `/traders/{id}` | Mettre a jour un cambiste. |) Tj
+T*
+(| `DELETE` | `/traders/{id}` | Supprimer logiquement un cambiste. |) Tj
+T*
+(| `POST` | `/customers` | Creer un client simple. |) Tj
+T*
+(| `POST` | `/customers/kyc` | Creer un client avec profil KYC. |) Tj
+T*
+(| `GET` | `/customers/{id}` | Recuperer un client. |) Tj
+T*
+(| `PUT` | `/customers/{id}` | Mettre a jour un client. |) Tj
+T*
+(| `GET` | `/customers/{id}/kyc` | Recuperer le profil KYC d'un client. |) Tj
+T*
+(| `PUT` | `/customers/{id}/kyc` | Mettre a jour le KYC et recalculer le risque. |) Tj
+T*
+ET
+endstream
+endobj
+5 0 obj
+<< /Type /Page /Parent 42 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 4 0 R >>
+endobj
+6 0 obj
+<< /Length 1887 >>
+stream
+BT
+/F1 8.5 Tf
+50 800 Td
+12 TL
+(| `POST` | `/customers/{id}/kyc/reassess` | Recalculer le risque KYC du client. |) Tj
+T*
+(| `POST` | `/transactions` | Creer une transaction avec conversion. |) Tj
+T*
+(| `GET` | `/transactions/{id}` | Recuperer une transaction. |) Tj
+T*
+(| `POST` | `/risk-flags` | Creer une alerte de risque manuelle. |) Tj
+T*
+(| `GET` | `/risk-flags` | Lister les alertes de risque. |) Tj
+T*
+(| `GET` | `/risk-flags/{id}` | Recuperer une alerte de risque. |) Tj
+T*
+(| `DELETE` | `/risk-flags/{id}` | Supprimer logiquement une alerte de risque. |) Tj
+T*
+() Tj
+T*
+(## Catalogue Des Requetes JSON) Tj
+T*
+() Tj
+T*
+(Cette section resume toutes les routes avec leurs payloads. Les routes `GET` et `DELETE` n'ont ) Tj
+T*
+(pas de body JSON.) Tj
+T*
+() Tj
+T*
+(### `POST /traders`) Tj
+T*
+() Tj
+T*
+(Body:) Tj
+T*
+() Tj
+T*
+(```json) Tj
+T*
+({) Tj
+T*
+(  "name": "Bureau Gombe",) Tj
+T*
+(  "first_name": "Jean",) Tj
+T*
+(  "last_name": "Kabila",) Tj
+T*
+(  "email": "jean@example.com",) Tj
+T*
+(  "phone": "+243810000000",) Tj
+T*
+(  "status": "ACTIVE",) Tj
+T*
+(  "role": "TRADER",) Tj
+T*
+(  "password_hash": "$2a$...",) Tj
+T*
+(  "store_id": 1,) Tj
+T*
+(  "is_active": true) Tj
+T*
+(}) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(Response `201 Created`:) Tj
+T*
+() Tj
+T*
+(```json) Tj
+T*
+({) Tj
+T*
+(  "id": 1,) Tj
+T*
+(  "name": "Bureau Gombe",) Tj
+T*
+(  "first_name": "Jean",) Tj
+T*
+(  "last_name": "Kabila",) Tj
+T*
+(  "email": "jean@example.com",) Tj
+T*
+(  "phone": "+243810000000",) Tj
+T*
+(  "status": "ACTIVE",) Tj
+T*
+(  "created_at": "2026-08-21T12:30:00Z",) Tj
+T*
+(  "updated_at": "2026-08-21T12:30:00Z",) Tj
+T*
+(  "deleted_at": null,) Tj
+T*
+(  "role": "TRADER",) Tj
+T*
+(  "password_hash": "$2a$...",) Tj
+T*
+(  "store_id": 1,) Tj
+T*
+(  "is_active": true) Tj
+T*
+(}) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(### `GET /traders/{id}`) Tj
+T*
+() Tj
+T*
+(Body: aucun.) Tj
+T*
+() Tj
+T*
+(Response `200 OK`: objet `Trader`.) Tj
+T*
+ET
+endstream
+endobj
+7 0 obj
+<< /Type /Page /Parent 42 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 6 0 R >>
+endobj
+8 0 obj
+<< /Length 1439 >>
+stream
+BT
+/F1 8.5 Tf
+50 800 Td
+12 TL
+() Tj
+T*
+(```json) Tj
+T*
+({) Tj
+T*
+(  "id": 1,) Tj
+T*
+(  "name": "Bureau Gombe",) Tj
+T*
+(  "first_name": "Jean",) Tj
+T*
+(  "last_name": "Kabila",) Tj
+T*
+(  "email": "jean@example.com",) Tj
+T*
+(  "phone": "+243810000000",) Tj
+T*
+(  "status": "ACTIVE",) Tj
+T*
+(  "created_at": "2026-08-21T12:30:00Z",) Tj
+T*
+(  "updated_at": "2026-08-21T12:30:00Z",) Tj
+T*
+(  "deleted_at": null,) Tj
+T*
+(  "role": "TRADER",) Tj
+T*
+(  "password_hash": "$2a$...",) Tj
+T*
+(  "store_id": 1,) Tj
+T*
+(  "is_active": true) Tj
+T*
+(}) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(### `PUT /traders/{id}`) Tj
+T*
+() Tj
+T*
+(Body:) Tj
+T*
+() Tj
+T*
+(```json) Tj
+T*
+({) Tj
+T*
+(  "name": "Bureau Gombe",) Tj
+T*
+(  "first_name": "Jean",) Tj
+T*
+(  "last_name": "Kabila",) Tj
+T*
+(  "email": "jean@example.com",) Tj
+T*
+(  "phone": "+243810000000",) Tj
+T*
+(  "status": "ACTIVE",) Tj
+T*
+(  "role": "MANAGER",) Tj
+T*
+(  "password_hash": "",) Tj
+T*
+(  "store_id": 1,) Tj
+T*
+(  "is_active": true) Tj
+T*
+(}) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(Response `200 OK`: objet `Trader`.) Tj
+T*
+() Tj
+T*
+(### `DELETE /traders/{id}`) Tj
+T*
+() Tj
+T*
+(Body: aucun.) Tj
+T*
+() Tj
+T*
+(Response: `204 No Content`.) Tj
+T*
+() Tj
+T*
+(### `POST /customers`) Tj
+T*
+() Tj
+T*
+(Body:) Tj
+T*
+() Tj
+T*
+(```json) Tj
+T*
+({) Tj
+T*
+(  "full_name": "Grace Hopper",) Tj
+T*
+(  "id_number": "ID-123456",) Tj
+T*
+(  "id_type": "PASSPORT",) Tj
+T*
+(  "phone": "+243820000000",) Tj
+T*
+(  "address": "Kinshasa") Tj
+T*
+ET
+endstream
+endobj
+9 0 obj
+<< /Type /Page /Parent 42 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 8 0 R >>
+endobj
+10 0 obj
+<< /Length 1613 >>
+stream
+BT
+/F1 8.5 Tf
+50 800 Td
+12 TL
+(}) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(Response `201 Created`:) Tj
+T*
+() Tj
+T*
+(```json) Tj
+T*
+({) Tj
+T*
+(  "id": 1,) Tj
+T*
+(  "full_name": "Grace Hopper",) Tj
+T*
+(  "id_number": "ID-123456",) Tj
+T*
+(  "id_type": "PASSPORT",) Tj
+T*
+(  "phone": "+243820000000",) Tj
+T*
+(  "address": "Kinshasa",) Tj
+T*
+(  "created_at": "2026-08-21T12:30:00Z",) Tj
+T*
+(  "updated_at": "2026-08-21T12:30:00Z",) Tj
+T*
+(  "risk_level": "",) Tj
+T*
+(  "risk_score": 0) Tj
+T*
+(}) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(### `POST /customers/kyc`) Tj
+T*
+() Tj
+T*
+(Body:) Tj
+T*
+() Tj
+T*
+(```json) Tj
+T*
+({) Tj
+T*
+(  "customer": {) Tj
+T*
+(    "full_name": "Grace Hopper",) Tj
+T*
+(    "id_number": "ID-123456",) Tj
+T*
+(    "id_type": "PASSPORT",) Tj
+T*
+(    "phone": "+243820000000",) Tj
+T*
+(    "address": "Kinshasa") Tj
+T*
+(  },) Tj
+T*
+(  "kyc_profile": {) Tj
+T*
+(    "legal_nature": "INDIVIDUAL",) Tj
+T*
+(    "activity_profile": "BUSINESS",) Tj
+T*
+(    "profession": "Entrepreneur",) Tj
+T*
+(    "employer": "",) Tj
+T*
+(    "company_name": "",) Tj
+T*
+(    "registration_number": "",) Tj
+T*
+(    "source_of_funds": "Business revenue",) Tj
+T*
+(    "purpose_of_operations": "Currency exchange",) Tj
+T*
+(    "expected_volume": 50000,) Tj
+T*
+(    "expected_frequency": 12,) Tj
+T*
+(    "last_verification_date": "2026-08-21T12:30:00Z") Tj
+T*
+(  }) Tj
+T*
+(}) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(Response `201 Created`: objet `Customer`.) Tj
+T*
+() Tj
+T*
+(```json) Tj
+T*
+({) Tj
+T*
+(  "id": 1,) Tj
+T*
+(  "full_name": "Grace Hopper",) Tj
+T*
+(  "id_number": "ID-123456",) Tj
+T*
+(  "id_type": "PASSPORT",) Tj
+T*
+(  "phone": "+243820000000",) Tj
+T*
+ET
+endstream
+endobj
+11 0 obj
+<< /Type /Page /Parent 42 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 10 0 R >>
+endobj
+12 0 obj
+<< /Length 1473 >>
+stream
+BT
+/F1 8.5 Tf
+50 800 Td
+12 TL
+(  "address": "Kinshasa",) Tj
+T*
+(  "created_at": "2026-08-21T12:30:00Z",) Tj
+T*
+(  "updated_at": "2026-08-21T12:30:00Z",) Tj
+T*
+(  "risk_level": "LOW",) Tj
+T*
+(  "risk_score": 20) Tj
+T*
+(}) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(### `GET /customers/{id}`) Tj
+T*
+() Tj
+T*
+(Body: aucun.) Tj
+T*
+() Tj
+T*
+(Response `200 OK`: objet `Customer`.) Tj
+T*
+() Tj
+T*
+(```json) Tj
+T*
+({) Tj
+T*
+(  "id": 1,) Tj
+T*
+(  "full_name": "Grace Hopper",) Tj
+T*
+(  "id_number": "ID-123456",) Tj
+T*
+(  "id_type": "PASSPORT",) Tj
+T*
+(  "phone": "+243820000000",) Tj
+T*
+(  "address": "Kinshasa",) Tj
+T*
+(  "created_at": "2026-08-21T12:30:00Z",) Tj
+T*
+(  "updated_at": "2026-08-21T12:30:00Z",) Tj
+T*
+(  "deleted_at": null,) Tj
+T*
+(  "risk_level": "LOW",) Tj
+T*
+(  "risk_score": 20) Tj
+T*
+(}) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(### `PUT /customers/{id}`) Tj
+T*
+() Tj
+T*
+(Body:) Tj
+T*
+() Tj
+T*
+(```json) Tj
+T*
+({) Tj
+T*
+(  "full_name": "Grace Hopper",) Tj
+T*
+(  "id_number": "ID-123456",) Tj
+T*
+(  "id_type": "NATIONAL_ID",) Tj
+T*
+(  "phone": "+243820000000",) Tj
+T*
+(  "address": "Gombe, Kinshasa") Tj
+T*
+(}) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(Response `200 OK`: objet `Customer`.) Tj
+T*
+() Tj
+T*
+(### `GET /customers/{id}/kyc`) Tj
+T*
+() Tj
+T*
+(Body: aucun.) Tj
+T*
+() Tj
+T*
+(Response `200 OK`: objet `CustomerKYCProfile`.) Tj
+T*
+() Tj
+T*
+(```json) Tj
+T*
+({) Tj
+T*
+(  "id": 1,) Tj
+T*
+(  "customer_id": 1,) Tj
+T*
+(  "legal_nature": "INDIVIDUAL",) Tj
+T*
+(  "activity_profile": "BUSINESS",) Tj
+T*
+ET
+endstream
+endobj
+13 0 obj
+<< /Type /Page /Parent 42 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 12 0 R >>
+endobj
+14 0 obj
+<< /Length 1841 >>
+stream
+BT
+/F1 8.5 Tf
+50 800 Td
+12 TL
+(  "kyc_status": "UNVERIFIED",) Tj
+T*
+(  "profession": "Entrepreneur",) Tj
+T*
+(  "employer": "",) Tj
+T*
+(  "company_name": "",) Tj
+T*
+(  "registration_number": "",) Tj
+T*
+(  "source_of_funds": "Business revenue",) Tj
+T*
+(  "purpose_of_operations": "Currency exchange",) Tj
+T*
+(  "expected_volume": 50000,) Tj
+T*
+(  "expected_frequency": 12,) Tj
+T*
+(  "last_verification_date": "2026-08-21T12:30:00Z",) Tj
+T*
+(  "created_at": "2026-08-21T12:30:00Z",) Tj
+T*
+(  "updated_at": "2026-08-21T12:30:00Z") Tj
+T*
+(}) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(### `PUT /customers/{id}/kyc`) Tj
+T*
+() Tj
+T*
+(Body:) Tj
+T*
+() Tj
+T*
+(```json) Tj
+T*
+({) Tj
+T*
+(  "legal_nature": "INDIVIDUAL",) Tj
+T*
+(  "activity_profile": "PROFESSIONAL",) Tj
+T*
+(  "kyc_status": "VERIFIED",) Tj
+T*
+(  "profession": "Consultant",) Tj
+T*
+(  "employer": "Self-employed",) Tj
+T*
+(  "company_name": "",) Tj
+T*
+(  "registration_number": "",) Tj
+T*
+(  "source_of_funds": "Consulting income",) Tj
+T*
+(  "purpose_of_operations": "FX operations",) Tj
+T*
+(  "expected_volume": 25000,) Tj
+T*
+(  "expected_frequency": 8,) Tj
+T*
+(  "last_verification_date": "2026-08-21T12:30:00Z") Tj
+T*
+(}) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(Response `200 OK`: profil KYC mis a jour.) Tj
+T*
+() Tj
+T*
+(### `POST /customers/{id}/kyc/reassess`) Tj
+T*
+() Tj
+T*
+(Body: aucun.) Tj
+T*
+() Tj
+T*
+(Response `200 OK`: objet `Customer` apres recalcul du risque.) Tj
+T*
+() Tj
+T*
+(```json) Tj
+T*
+({) Tj
+T*
+(  "id": 1,) Tj
+T*
+(  "full_name": "Grace Hopper",) Tj
+T*
+(  "id_number": "ID-123456",) Tj
+T*
+(  "id_type": "NATIONAL_ID",) Tj
+T*
+(  "phone": "+243820000000",) Tj
+T*
+(  "address": "Gombe, Kinshasa",) Tj
+T*
+(  "created_at": "2026-08-21T12:30:00Z",) Tj
+T*
+(  "updated_at": "2026-08-21T12:35:00Z",) Tj
+T*
+(  "deleted_at": null,) Tj
+T*
+(  "risk_level": "LOW",) Tj
+T*
+(  "risk_score": 0) Tj
+T*
+(}) Tj
+T*
+ET
+endstream
+endobj
+15 0 obj
+<< /Type /Page /Parent 42 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 14 0 R >>
+endobj
+16 0 obj
+<< /Length 1447 >>
+stream
+BT
+/F1 8.5 Tf
+50 800 Td
+12 TL
+(```) Tj
+T*
+() Tj
+T*
+(### `POST /transactions`) Tj
+T*
+() Tj
+T*
+(Body:) Tj
+T*
+() Tj
+T*
+(```json) Tj
+T*
+({) Tj
+T*
+(  "amount": 12500.75,) Tj
+T*
+(  "currency": "USD",) Tj
+T*
+(  "target_currency": "CDF",) Tj
+T*
+(  "type": "deposit",) Tj
+T*
+(  "rate": 2845.5,) Tj
+T*
+(  "status": "PENDING",) Tj
+T*
+(  "trader_id": 1,) Tj
+T*
+(  "customer_id": 1) Tj
+T*
+(}) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(Response `201 Created`: objet `Transaction` apres conversion et analyse AML/KYC synchrone.) Tj
+T*
+() Tj
+T*
+(```json) Tj
+T*
+({) Tj
+T*
+(  "id": 10,) Tj
+T*
+(  "amount": 12500.75,) Tj
+T*
+(  "currency": "USD",) Tj
+T*
+(  "target_currency": "CDF",) Tj
+T*
+(  "type": "deposit",) Tj
+T*
+(  "rate": 2845.5,) Tj
+T*
+(  "converted_amount": 35571408.75,) Tj
+T*
+(  "risk_level": "MEDIUM",) Tj
+T*
+(  "risk_score": 30,) Tj
+T*
+(  "status": "PENDING",) Tj
+T*
+(  "created_at": "2026-08-21T12:30:00Z",) Tj
+T*
+(  "updated_at": "2026-08-21T12:30:01Z",) Tj
+T*
+(  "deleted_at": null,) Tj
+T*
+(  "trader_id": 1,) Tj
+T*
+(  "customer_id": 1) Tj
+T*
+(}) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(### `GET /transactions/{id}`) Tj
+T*
+() Tj
+T*
+(Body: aucun.) Tj
+T*
+() Tj
+T*
+(Response `200 OK`: objet `Transaction`.) Tj
+T*
+() Tj
+T*
+(### `POST /risk-flags`) Tj
+T*
+() Tj
+T*
+(Body:) Tj
+T*
+() Tj
+T*
+(```json) Tj
+T*
+({) Tj
+T*
+(  "flag": "MANUAL_REVIEW",) Tj
+T*
+(  "reason": "Document KYC a verifier",) Tj
+T*
+(  "score": 15,) Tj
+T*
+(  "level": "MEDIUM",) Tj
+T*
+(  "transaction_id": 10,) Tj
+T*
+ET
+endstream
+endobj
+17 0 obj
+<< /Type /Page /Parent 42 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 16 0 R >>
+endobj
+18 0 obj
+<< /Length 1423 >>
+stream
+BT
+/F1 8.5 Tf
+50 800 Td
+12 TL
+(  "trader_id": 1,) Tj
+T*
+(  "customer_id": 1) Tj
+T*
+(}) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(Response `201 Created`:) Tj
+T*
+() Tj
+T*
+(```json) Tj
+T*
+({) Tj
+T*
+(  "id": 3,) Tj
+T*
+(  "flag": "MANUAL_REVIEW",) Tj
+T*
+(  "reason": "Document KYC a verifier",) Tj
+T*
+(  "score": 15,) Tj
+T*
+(  "level": "MEDIUM",) Tj
+T*
+(  "transaction_id": 10,) Tj
+T*
+(  "trader_id": 1,) Tj
+T*
+(  "customer_id": 1,) Tj
+T*
+(  "created_at": "2026-08-21T12:30:00Z",) Tj
+T*
+(  "updated_at": "2026-08-21T12:30:00Z",) Tj
+T*
+(  "deleted_at": null) Tj
+T*
+(}) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(### `GET /risk-flags`) Tj
+T*
+() Tj
+T*
+(Body: aucun.) Tj
+T*
+() Tj
+T*
+(Query params optionnels:) Tj
+T*
+() Tj
+T*
+(- `transaction_id`) Tj
+T*
+(- `trader_id`) Tj
+T*
+(- `customer_id`) Tj
+T*
+() Tj
+T*
+(Exemples:) Tj
+T*
+() Tj
+T*
+(```http) Tj
+T*
+(GET /risk-flags) Tj
+T*
+(GET /risk-flags?transaction_id=10) Tj
+T*
+(GET /risk-flags?customer_id=1&trader_id=1) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(Response `200 OK`:) Tj
+T*
+() Tj
+T*
+(```json) Tj
+T*
+([) Tj
+T*
+(  {) Tj
+T*
+(    "id": 3,) Tj
+T*
+(    "flag": "MANUAL_REVIEW",) Tj
+T*
+(    "reason": "Document KYC a verifier",) Tj
+T*
+(    "score": 15,) Tj
+T*
+(    "level": "MEDIUM",) Tj
+T*
+(    "transaction_id": 10,) Tj
+T*
+(    "trader_id": 1,) Tj
+T*
+(    "customer_id": 1,) Tj
+T*
+(    "created_at": "2026-08-21T12:30:00Z",) Tj
+T*
+(    "updated_at": "2026-08-21T12:30:00Z",) Tj
+T*
+(    "deleted_at": null) Tj
+T*
+(  }) Tj
+T*
+ET
+endstream
+endobj
+19 0 obj
+<< /Type /Page /Parent 42 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 18 0 R >>
+endobj
+20 0 obj
+<< /Length 1362 >>
+stream
+BT
+/F1 8.5 Tf
+50 800 Td
+12 TL
+(]) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(### `GET /risk-flags/{id}`) Tj
+T*
+() Tj
+T*
+(Body: aucun.) Tj
+T*
+() Tj
+T*
+(Response `200 OK`: objet `RiskFlag`.) Tj
+T*
+() Tj
+T*
+(### `DELETE /risk-flags/{id}`) Tj
+T*
+() Tj
+T*
+(Body: aucun.) Tj
+T*
+() Tj
+T*
+(Response: `204 No Content`.) Tj
+T*
+() Tj
+T*
+(## Traders) Tj
+T*
+() Tj
+T*
+(### Creer Un Trader) Tj
+T*
+() Tj
+T*
+(```http) Tj
+T*
+(POST /traders) Tj
+T*
+(Content-Type: application/json) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(```json) Tj
+T*
+({) Tj
+T*
+(  "name": "Bureau Gombe",) Tj
+T*
+(  "first_name": "Jean",) Tj
+T*
+(  "last_name": "Kabila",) Tj
+T*
+(  "email": "jean@example.com",) Tj
+T*
+(  "phone": "+243810000000",) Tj
+T*
+(  "status": "ACTIVE",) Tj
+T*
+(  "role": "TRADER",) Tj
+T*
+(  "password_hash": "$2a$...",) Tj
+T*
+(  "store_id": 1,) Tj
+T*
+(  "is_active": true) Tj
+T*
+(}) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(Champs obligatoires:) Tj
+T*
+() Tj
+T*
+(- `email`) Tj
+T*
+(- `password_hash`) Tj
+T*
+() Tj
+T*
+(Reponse `201 Created`:) Tj
+T*
+() Tj
+T*
+(```json) Tj
+T*
+({) Tj
+T*
+(  "id": 1,) Tj
+T*
+(  "name": "Bureau Gombe",) Tj
+T*
+(  "first_name": "Jean",) Tj
+T*
+(  "last_name": "Kabila",) Tj
+T*
+(  "email": "jean@example.com",) Tj
+T*
+(  "phone": "+243810000000",) Tj
+T*
+(  "status": "ACTIVE",) Tj
+T*
+(  "created_at": "2026-08-21T12:30:00Z",) Tj
+T*
+(  "updated_at": "2026-08-21T12:30:00Z",) Tj
+T*
+(  "deleted_at": null,) Tj
+T*
+ET
+endstream
+endobj
+21 0 obj
+<< /Type /Page /Parent 42 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 20 0 R >>
+endobj
+22 0 obj
+<< /Length 1325 >>
+stream
+BT
+/F1 8.5 Tf
+50 800 Td
+12 TL
+(  "role": "TRADER",) Tj
+T*
+(  "password_hash": "$2a$...",) Tj
+T*
+(  "store_id": 1,) Tj
+T*
+(  "is_active": true) Tj
+T*
+(}) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(### Recuperer Un Trader) Tj
+T*
+() Tj
+T*
+(```http) Tj
+T*
+(GET /traders/{id}) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(Reponse `200 OK`: objet `Trader`.) Tj
+T*
+() Tj
+T*
+(### Mettre A Jour Un Trader) Tj
+T*
+() Tj
+T*
+(```http) Tj
+T*
+(PUT /traders/{id}) Tj
+T*
+(Content-Type: application/json) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(Utilise le meme payload que la creation. Le handler ne modifie pas `password_hash`.) Tj
+T*
+() Tj
+T*
+(Champs obligatoires:) Tj
+T*
+() Tj
+T*
+(- `email`) Tj
+T*
+() Tj
+T*
+(Reponse `200 OK`: objet `Trader`.) Tj
+T*
+() Tj
+T*
+(### Supprimer Un Trader) Tj
+T*
+() Tj
+T*
+(```http) Tj
+T*
+(DELETE /traders/{id}) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(Reponse `204 No Content`. La suppression est logique via `deleted_at`.) Tj
+T*
+() Tj
+T*
+(## Customers) Tj
+T*
+() Tj
+T*
+(### Creer Un Client) Tj
+T*
+() Tj
+T*
+(```http) Tj
+T*
+(POST /customers) Tj
+T*
+(Content-Type: application/json) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(```json) Tj
+T*
+({) Tj
+T*
+(  "full_name": "Grace Hopper",) Tj
+T*
+(  "id_number": "ID-123456",) Tj
+T*
+(  "id_type": "PASSPORT",) Tj
+T*
+(  "phone": "+243820000000",) Tj
+T*
+(  "address": "Kinshasa") Tj
+T*
+(}) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(Champs obligatoires:) Tj
+T*
+ET
+endstream
+endobj
+23 0 obj
+<< /Type /Page /Parent 42 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 22 0 R >>
+endobj
+24 0 obj
+<< /Length 1708 >>
+stream
+BT
+/F1 8.5 Tf
+50 800 Td
+12 TL
+() Tj
+T*
+(- `full_name`) Tj
+T*
+(- `id_number`) Tj
+T*
+() Tj
+T*
+(Reponse `201 Created`:) Tj
+T*
+() Tj
+T*
+(```json) Tj
+T*
+({) Tj
+T*
+(  "id": 1,) Tj
+T*
+(  "full_name": "Grace Hopper",) Tj
+T*
+(  "id_number": "ID-123456",) Tj
+T*
+(  "id_type": "PASSPORT",) Tj
+T*
+(  "phone": "+243820000000",) Tj
+T*
+(  "address": "Kinshasa",) Tj
+T*
+(  "created_at": "2026-08-21T12:30:00Z",) Tj
+T*
+(  "updated_at": "2026-08-21T12:30:00Z",) Tj
+T*
+(  "risk_level": "",) Tj
+T*
+(  "risk_score": 0) Tj
+T*
+(}) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(### Creer Un Client Avec KYC) Tj
+T*
+() Tj
+T*
+(```http) Tj
+T*
+(POST /customers/kyc) Tj
+T*
+(Content-Type: application/json) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(```json) Tj
+T*
+({) Tj
+T*
+(  "customer": {) Tj
+T*
+(    "full_name": "Grace Hopper",) Tj
+T*
+(    "id_number": "ID-123456",) Tj
+T*
+(    "id_type": "PASSPORT",) Tj
+T*
+(    "phone": "+243820000000",) Tj
+T*
+(    "address": "Kinshasa") Tj
+T*
+(  },) Tj
+T*
+(  "kyc_profile": {) Tj
+T*
+(    "legal_nature": "INDIVIDUAL",) Tj
+T*
+(    "activity_profile": "BUSINESS",) Tj
+T*
+(    "profession": "Entrepreneur",) Tj
+T*
+(    "source_of_funds": "Business revenue",) Tj
+T*
+(    "purpose_of_operations": "Currency exchange",) Tj
+T*
+(    "expected_volume": 50000,) Tj
+T*
+(    "expected_frequency": 12) Tj
+T*
+(  }) Tj
+T*
+(}) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(Notes:) Tj
+T*
+() Tj
+T*
+(- `kyc_status` est force a `UNVERIFIED` a la creation initiale.) Tj
+T*
+(- Un risque initial est calcule et persiste sur le client.) Tj
+T*
+(- Une personne morale `LEGAL_ENTITY` ne peut pas avoir `activity_profile = PERSONAL`.) Tj
+T*
+() Tj
+T*
+(Reponse `201 Created`: objet `Customer` avec `risk_level` et `risk_score`.) Tj
+T*
+() Tj
+T*
+(### Recuperer Un Client) Tj
+T*
+ET
+endstream
+endobj
+25 0 obj
+<< /Type /Page /Parent 42 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 24 0 R >>
+endobj
+26 0 obj
+<< /Length 1468 >>
+stream
+BT
+/F1 8.5 Tf
+50 800 Td
+12 TL
+() Tj
+T*
+(```http) Tj
+T*
+(GET /customers/{id}) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(Reponse `200 OK`: objet `Customer`.) Tj
+T*
+() Tj
+T*
+(### Mettre A Jour Un Client) Tj
+T*
+() Tj
+T*
+(```http) Tj
+T*
+(PUT /customers/{id}) Tj
+T*
+(Content-Type: application/json) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(Utilise le meme payload que `POST /customers`.) Tj
+T*
+() Tj
+T*
+(Reponse `200 OK`: objet `Customer`.) Tj
+T*
+() Tj
+T*
+(## KYC) Tj
+T*
+() Tj
+T*
+(### Recuperer Le Profil KYC) Tj
+T*
+() Tj
+T*
+(```http) Tj
+T*
+(GET /customers/{id}/kyc) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(Reponse `200 OK`:) Tj
+T*
+() Tj
+T*
+(```json) Tj
+T*
+({) Tj
+T*
+(  "id": 1,) Tj
+T*
+(  "customer_id": 1,) Tj
+T*
+(  "legal_nature": "INDIVIDUAL",) Tj
+T*
+(  "activity_profile": "BUSINESS",) Tj
+T*
+(  "kyc_status": "VERIFIED",) Tj
+T*
+(  "profession": "Entrepreneur",) Tj
+T*
+(  "employer": "",) Tj
+T*
+(  "company_name": "",) Tj
+T*
+(  "registration_number": "",) Tj
+T*
+(  "source_of_funds": "Business revenue",) Tj
+T*
+(  "purpose_of_operations": "Currency exchange",) Tj
+T*
+(  "expected_volume": 50000,) Tj
+T*
+(  "expected_frequency": 12,) Tj
+T*
+(  "last_verification_date": "2026-08-21T12:30:00Z",) Tj
+T*
+(  "created_at": "2026-08-21T12:00:00Z",) Tj
+T*
+(  "updated_at": "2026-08-21T12:30:00Z") Tj
+T*
+(}) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(### Mettre A Jour Le Profil KYC) Tj
+T*
+() Tj
+T*
+(```http) Tj
+T*
+(PUT /customers/{id}/kyc) Tj
+T*
+(Content-Type: application/json) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(```json) Tj
+T*
+({) Tj
+T*
+ET
+endstream
+endobj
+27 0 obj
+<< /Type /Page /Parent 42 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 26 0 R >>
+endobj
+28 0 obj
+<< /Length 1599 >>
+stream
+BT
+/F1 8.5 Tf
+50 800 Td
+12 TL
+(  "legal_nature": "INDIVIDUAL",) Tj
+T*
+(  "activity_profile": "PROFESSIONAL",) Tj
+T*
+(  "kyc_status": "VERIFIED",) Tj
+T*
+(  "profession": "Consultant",) Tj
+T*
+(  "employer": "Self-employed",) Tj
+T*
+(  "source_of_funds": "Consulting income",) Tj
+T*
+(  "purpose_of_operations": "FX operations",) Tj
+T*
+(  "expected_volume": 25000,) Tj
+T*
+(  "expected_frequency": 8,) Tj
+T*
+(  "last_verification_date": "2026-08-21T12:30:00Z") Tj
+T*
+(}) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(Comportement:) Tj
+T*
+() Tj
+T*
+(- preserve `id`, `customer_id` et `created_at`;) Tj
+T*
+(- conserve l'ancien `kyc_status` si le champ est vide;) Tj
+T*
+(- conserve `last_verification_date` si le champ est vide;) Tj
+T*
+(- valide la coherence KYC;) Tj
+T*
+(- persiste le profil;) Tj
+T*
+(- relance automatiquement `TriggerRiskReassessment`.) Tj
+T*
+() Tj
+T*
+(Reponse `200 OK`: profil KYC mis a jour.) Tj
+T*
+() Tj
+T*
+(### Recalculer Le Risque KYC) Tj
+T*
+() Tj
+T*
+(```http) Tj
+T*
+(POST /customers/{id}/kyc/reassess) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(Reponse `200 OK`: objet `Customer` apres recalcul.) Tj
+T*
+() Tj
+T*
+(### Enumerations KYC) Tj
+T*
+() Tj
+T*
+(`legal_nature`:) Tj
+T*
+() Tj
+T*
+(- `INDIVIDUAL`) Tj
+T*
+(- `LEGAL_ENTITY`) Tj
+T*
+() Tj
+T*
+(`activity_profile`:) Tj
+T*
+() Tj
+T*
+(- `PERSONAL`) Tj
+T*
+(- `PROFESSIONAL`) Tj
+T*
+(- `BUSINESS`) Tj
+T*
+(- `OTHER`) Tj
+T*
+() Tj
+T*
+(`kyc_status`:) Tj
+T*
+() Tj
+T*
+(- `UNVERIFIED`) Tj
+T*
+(- `PARTIALLY_VERIFIED`) Tj
+T*
+(- `VERIFIED`) Tj
+T*
+(- `ENHANCED_VERIFICATION`) Tj
+T*
+() Tj
+T*
+(## Transactions FX) Tj
+T*
+() Tj
+T*
+(### Creer Une Transaction) Tj
+T*
+() Tj
+T*
+(```http) Tj
+T*
+ET
+endstream
+endobj
+29 0 obj
+<< /Type /Page /Parent 42 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 28 0 R >>
+endobj
+30 0 obj
+<< /Length 1848 >>
+stream
+BT
+/F1 8.5 Tf
+50 800 Td
+12 TL
+(POST /transactions) Tj
+T*
+(Content-Type: application/json) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(```json) Tj
+T*
+({) Tj
+T*
+(  "amount": 12500.75,) Tj
+T*
+(  "currency": "USD",) Tj
+T*
+(  "target_currency": "CDF",) Tj
+T*
+(  "type": "deposit",) Tj
+T*
+(  "rate": 2845.5,) Tj
+T*
+(  "status": "PENDING",) Tj
+T*
+(  "trader_id": 1,) Tj
+T*
+(  "customer_id": 2) Tj
+T*
+(}) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(| Champ | Type | Obligatoire | Description |) Tj
+T*
+(| --- | --- | --- | --- |) Tj
+T*
+(| `amount` | number | oui | Montant source. Doit etre `> 0`. |) Tj
+T*
+(| `currency` | string | oui | Devise source, convertie en majuscules. |) Tj
+T*
+(| `target_currency` | string | oui | Devise cible, convertie en majuscules. |) Tj
+T*
+(| `type` | string | non | Type metier, par exemple `deposit`, `withdrawal`, `buy`, `sell`. |) Tj
+T*
+(| `rate` | number | oui | Taux fixe par le trader. Doit etre `> 0`. |) Tj
+T*
+(| `status` | string | non | Statut initial. |) Tj
+T*
+(| `trader_id` | number | oui | Identifiant du trader. |) Tj
+T*
+(| `customer_id` | number | oui | Identifiant du client. |) Tj
+T*
+() Tj
+T*
+(### Calcul De Conversion) Tj
+T*
+() Tj
+T*
+(Le calcul est fait avant la persistence:) Tj
+T*
+() Tj
+T*
+(```text) Tj
+T*
+(converted_amount = amount * rate) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(Le resultat est arrondi a 4 decimales.) Tj
+T*
+() Tj
+T*
+(Exemple:) Tj
+T*
+() Tj
+T*
+(```text) Tj
+T*
+(100 USD * 2850.55 = 285055 CDF) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(Reponse `201 Created`:) Tj
+T*
+() Tj
+T*
+(```json) Tj
+T*
+({) Tj
+T*
+(  "id": 10,) Tj
+T*
+(  "amount": 12500.75,) Tj
+T*
+(  "currency": "USD",) Tj
+T*
+(  "target_currency": "CDF",) Tj
+T*
+(  "type": "deposit",) Tj
+T*
+(  "rate": 2845.5,) Tj
+T*
+(  "converted_amount": 35571408.75,) Tj
+T*
+(  "status": "PENDING",) Tj
+T*
+(  "created_at": "2026-08-21T12:30:00Z",) Tj
+T*
+(  "updated_at": "2026-08-21T12:30:00Z",) Tj
+T*
+ET
+endstream
+endobj
+31 0 obj
+<< /Type /Page /Parent 42 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 30 0 R >>
+endobj
+32 0 obj
+<< /Length 1516 >>
+stream
+BT
+/F1 8.5 Tf
+50 800 Td
+12 TL
+(  "deleted_at": null,) Tj
+T*
+(  "trader_id": 1,) Tj
+T*
+(  "customer_id": 2) Tj
+T*
+(}) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(Important: l'analyse AML/KYC est executee avant la reponse. La reponse `201 Created` contient ) Tj
+T*
+(donc le `risk_level` et le `risk_score` transactionnels finalises.) Tj
+T*
+() Tj
+T*
+(### Recuperer Une Transaction) Tj
+T*
+() Tj
+T*
+(```http) Tj
+T*
+(GET /transactions/{id}) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(Reponse `200 OK`: objet `Transaction`, avec `risk_level` et `risk_score`.) Tj
+T*
+() Tj
+T*
+(## Risk Flags) Tj
+T*
+() Tj
+T*
+(Les `risk_flags` representent les alertes produites par le moteur AML/KYC ou ajoutees ) Tj
+T*
+(manuellement.) Tj
+T*
+() Tj
+T*
+(### Creer Un Risk Flag Manuel) Tj
+T*
+() Tj
+T*
+(```http) Tj
+T*
+(POST /risk-flags) Tj
+T*
+(Content-Type: application/json) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(```json) Tj
+T*
+({) Tj
+T*
+(  "flag": "MANUAL_REVIEW",) Tj
+T*
+(  "reason": "Document KYC a verifier",) Tj
+T*
+(  "score": 15,) Tj
+T*
+(  "level": "MEDIUM",) Tj
+T*
+(  "transaction_id": 10,) Tj
+T*
+(  "trader_id": 1,) Tj
+T*
+(  "customer_id": 2) Tj
+T*
+(}) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(Champs obligatoires:) Tj
+T*
+() Tj
+T*
+(- `flag`) Tj
+T*
+(- `transaction_id`) Tj
+T*
+() Tj
+T*
+(Reponse `201 Created`:) Tj
+T*
+() Tj
+T*
+(```json) Tj
+T*
+({) Tj
+T*
+(  "id": 3,) Tj
+T*
+(  "flag": "MANUAL_REVIEW",) Tj
+T*
+(  "reason": "Document KYC a verifier",) Tj
+T*
+(  "score": 15,) Tj
+T*
+(  "level": "MEDIUM",) Tj
+T*
+(  "transaction_id": 10,) Tj
+T*
+(  "trader_id": 1,) Tj
+T*
+(  "customer_id": 2,) Tj
+T*
+ET
+endstream
+endobj
+33 0 obj
+<< /Type /Page /Parent 42 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 32 0 R >>
+endobj
+34 0 obj
+<< /Length 1812 >>
+stream
+BT
+/F1 8.5 Tf
+50 800 Td
+12 TL
+(  "created_at": "2026-08-21T12:30:00Z",) Tj
+T*
+(  "updated_at": "2026-08-21T12:30:00Z",) Tj
+T*
+(  "deleted_at": null) Tj
+T*
+(}) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(### Lister Les Risk Flags) Tj
+T*
+() Tj
+T*
+(```http) Tj
+T*
+(GET /risk-flags) Tj
+T*
+(GET /risk-flags?transaction_id=10) Tj
+T*
+(GET /risk-flags?customer_id=2) Tj
+T*
+(GET /risk-flags?trader_id=1) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(Filtres optionnels combinables:) Tj
+T*
+() Tj
+T*
+(- `transaction_id`) Tj
+T*
+(- `customer_id`) Tj
+T*
+(- `trader_id`) Tj
+T*
+() Tj
+T*
+(Reponse `200 OK`: tableau de `RiskFlag`, trie par `created_at DESC, id DESC`.) Tj
+T*
+() Tj
+T*
+(### Recuperer Un Risk Flag) Tj
+T*
+() Tj
+T*
+(```http) Tj
+T*
+(GET /risk-flags/{id}) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(Reponse `200 OK`: objet `RiskFlag`.) Tj
+T*
+() Tj
+T*
+(### Supprimer Un Risk Flag) Tj
+T*
+() Tj
+T*
+(```http) Tj
+T*
+(DELETE /risk-flags/{id}) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(Reponse `204 No Content`. La suppression est logique via `deleted_at`.) Tj
+T*
+() Tj
+T*
+(## Analyse AML/KYC) Tj
+T*
+() Tj
+T*
+(`RiskService.AnalyzeTransactionAndCustomer` est execute pendant chaque `POST /transactions`, ) Tj
+T*
+(apres la persistence de la transaction et avant la reponse HTTP.) Tj
+T*
+() Tj
+T*
+(Flux:) Tj
+T*
+() Tj
+T*
+(1. recuperation du client;) Tj
+T*
+(2. recuperation du profil KYC si disponible;) Tj
+T*
+(3. recuperation de l'historique transactionnel du client sur 30 jours;) Tj
+T*
+(4. execution des regles transactionnelles;) Tj
+T*
+(5. mise a jour du risque transaction;) Tj
+T*
+(6. execution des regles KYC/client;) Tj
+T*
+(7. creation des `risk_flags` pour toutes les regles declenchees;) Tj
+T*
+(8. mise a jour du risque global client avec `transactionRisk.Score + customerRisk.Score`.) Tj
+T*
+() Tj
+T*
+(### Regles Transactionnelles) Tj
+T*
+() Tj
+T*
+(| Code | Condition | Score |) Tj
+T*
+ET
+endstream
+endobj
+35 0 obj
+<< /Type /Page /Parent 42 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 34 0 R >>
+endobj
+36 0 obj
+<< /Length 2185 >>
+stream
+BT
+/F1 8.5 Tf
+50 800 Td
+12 TL
+(| --- | --- | --- |) Tj
+T*
+(| `HIGH_TRANSACTION_AMOUNT` | `amount > 10000.0` | `30` |) Tj
+T*
+(| `CUMULATIVE_VOLUME_24H` | cumul client sur 24h `> 20000.0` | `35` |) Tj
+T*
+(| `CUMULATIVE_VOLUME_30D` | cumul client sur 30j `> 100000.0` | `40` |) Tj
+T*
+(| `UNUSUAL_FREQUENCY_24H` | nombre de transactions client sur 24h `> 10` | `25` |) Tj
+T*
+() Tj
+T*
+(Seuils du risque transaction:) Tj
+T*
+() Tj
+T*
+(| Score | Niveau |) Tj
+T*
+(| --- | --- |) Tj
+T*
+(| `>= 75` | `CRITICAL` |) Tj
+T*
+(| `>= 50` | `HIGH` |) Tj
+T*
+(| `>= 25` | `MEDIUM` |) Tj
+T*
+(| `< 25` | `LOW` |) Tj
+T*
+() Tj
+T*
+(### Regles KYC/Client) Tj
+T*
+() Tj
+T*
+(| Code | Condition | Score |) Tj
+T*
+(| --- | --- | --- |) Tj
+T*
+(| `INSUFFICIENT_KYC_STATUS` | profil KYC absent ou statut different de `VERIFIED` / ) Tj
+T*
+(`ENHANCED_VERIFICATION` | `45` |) Tj
+T*
+(| `INCONSISTENT_KYC_PROFILE` | profil absent, personne morale `PERSONAL`, donnees societe ) Tj
+T*
+(manquantes, profession manquante ou source/purpose manquants | `35` |) Tj
+T*
+(| `BUSINESS_ACTIVITY_PROFILE` | `activity_profile == BUSINESS` | `15` |) Tj
+T*
+(| `EXPECTED_VOLUME_EXCEEDED` | cumul client 30j `> expected_volume` declare au KYC | `30` |) Tj
+T*
+() Tj
+T*
+(Seuils du risque KYC/client:) Tj
+T*
+() Tj
+T*
+(| Score | Niveau |) Tj
+T*
+(| --- | --- |) Tj
+T*
+(| `>= 70` | `CRITICAL` |) Tj
+T*
+(| `>= 40` | `HIGH` |) Tj
+T*
+(| `>= 20` | `MEDIUM` |) Tj
+T*
+(| `< 20` | `LOW` |) Tj
+T*
+() Tj
+T*
+(Seuils du risque global client apres transaction:) Tj
+T*
+() Tj
+T*
+(| Score total | Niveau |) Tj
+T*
+(| --- | --- |) Tj
+T*
+(| `>= 90` | `CRITICAL` |) Tj
+T*
+(| `>= 60` | `HIGH` |) Tj
+T*
+(| `>= 30` | `MEDIUM` |) Tj
+T*
+(| `< 30` | `LOW` |) Tj
+T*
+() Tj
+T*
+(### Recalcul KYC Manuel) Tj
+T*
+() Tj
+T*
+(`POST /customers/{id}/kyc/reassess` utilise le profil KYC courant du client et met a jour ) Tj
+T*
+(`customers.risk_score` / `customers.risk_level`.) Tj
+T*
+() Tj
+T*
+(Ce recalcul manuel est plus simple que l'analyse AML post-transaction: il ne lance pas les ) Tj
+T*
+(regles de cumul/frequence transactionnelle.) Tj
+T*
+() Tj
+T*
+(## Modele De Donnees) Tj
+T*
+() Tj
+T*
+(### `traders`) Tj
+T*
+() Tj
+T*
+(| Colonne | Type | Notes |) Tj
+T*
+(| --- | --- | --- |) Tj
+T*
+ET
+endstream
+endobj
+37 0 obj
+<< /Type /Page /Parent 42 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 36 0 R >>
+endobj
+38 0 obj
+<< /Length 3117 >>
+stream
+BT
+/F1 8.5 Tf
+50 800 Td
+12 TL
+(| `id` | `SERIAL` | Cle primaire. |) Tj
+T*
+(| `name` | `VARCHAR\(255\)` | Nom affiche. |) Tj
+T*
+(| `first_name` | `VARCHAR\(255\)` | Prenom. |) Tj
+T*
+(| `last_name` | `VARCHAR\(255\)` | Nom. |) Tj
+T*
+(| `email` | `VARCHAR\(255\)` | Unique, obligatoire. |) Tj
+T*
+(| `phone` | `VARCHAR\(50\)` | Telephone. |) Tj
+T*
+(| `status` | `VARCHAR\(50\)` | Statut. |) Tj
+T*
+(| `role` | `VARCHAR\(50\)` | Role. |) Tj
+T*
+(| `password_hash` | `VARCHAR\(255\)` | Obligatoire. |) Tj
+T*
+(| `store_id` | `INT` | Point de vente. |) Tj
+T*
+(| `is_active` | `BOOLEAN` | Defaut `TRUE`. |) Tj
+T*
+(| `created_at`, `updated_at`, `deleted_at` | `TIMESTAMPTZ` | Timestamps. |) Tj
+T*
+() Tj
+T*
+(### `customers`) Tj
+T*
+() Tj
+T*
+(| Colonne | Type | Notes |) Tj
+T*
+(| --- | --- | --- |) Tj
+T*
+(| `id` | `SERIAL` | Cle primaire. |) Tj
+T*
+(| `full_name` | `VARCHAR\(255\)` | Obligatoire. |) Tj
+T*
+(| `id_number` | `VARCHAR\(100\)` | Unique, obligatoire. |) Tj
+T*
+(| `id_type` | `VARCHAR\(50\)` | Type de piece. |) Tj
+T*
+(| `phone` | `VARCHAR\(50\)` | Telephone. |) Tj
+T*
+(| `address` | `TEXT` | Adresse. |) Tj
+T*
+(| `risk_level` | `VARCHAR\(50\)` | `LOW`, `MEDIUM`, `HIGH`, `CRITICAL`. |) Tj
+T*
+(| `risk_score` | `NUMERIC\(5, 2\)` | Defaut `0`. |) Tj
+T*
+(| `created_at`, `updated_at`, `deleted_at` | `TIMESTAMPTZ` | Timestamps. |) Tj
+T*
+() Tj
+T*
+(### `customer_kyc_profiles`) Tj
+T*
+() Tj
+T*
+(| Colonne | Type | Notes |) Tj
+T*
+(| --- | --- | --- |) Tj
+T*
+(| `id` | `SERIAL` | Cle primaire. |) Tj
+T*
+(| `customer_id` | `INT` | Unique, reference `customers\(id\)`. |) Tj
+T*
+(| `legal_nature` | `VARCHAR\(50\)` | `INDIVIDUAL` ou `LEGAL_ENTITY`. |) Tj
+T*
+(| `activity_profile` | `VARCHAR\(50\)` | `PERSONAL`, `PROFESSIONAL`, `BUSINESS`, `OTHER`. |) Tj
+T*
+(| `kyc_status` | `VARCHAR\(50\)` | Statut KYC. |) Tj
+T*
+(| `profession`, `employer` | `VARCHAR\(255\)` | Champs personne physique. |) Tj
+T*
+(| `company_name`, `registration_number` | `VARCHAR\(255\)` | Champs personne morale. |) Tj
+T*
+(| `source_of_funds` | `TEXT` | Source des fonds. |) Tj
+T*
+(| `purpose_of_operations` | `TEXT` | Objectif des operations. |) Tj
+T*
+(| `expected_volume` | `NUMERIC\(14, 2\)` | Volume mensuel attendu. |) Tj
+T*
+(| `expected_frequency` | `INT` | Nombre de transactions mensuelles attendu. |) Tj
+T*
+(| `last_verification_date` | `TIMESTAMPTZ` | Derniere verification. |) Tj
+T*
+(| `created_at`, `updated_at` | `TIMESTAMPTZ` | Timestamps. |) Tj
+T*
+() Tj
+T*
+(### `transactions`) Tj
+T*
+() Tj
+T*
+(| Colonne | Type | Notes |) Tj
+T*
+(| --- | --- | --- |) Tj
+T*
+(| `id` | `SERIAL` | Cle primaire. |) Tj
+T*
+(| `amount` | `NUMERIC\(19, 4\)` | Montant source. |) Tj
+T*
+(| `currency` | `VARCHAR\(10\)` | Devise source. |) Tj
+T*
+(| `target_currency` | `VARCHAR\(10\)` | Devise cible. |) Tj
+T*
+(| `type` | `VARCHAR\(50\)` | Type de transaction. |) Tj
+T*
+(| `rate` | `NUMERIC\(19, 6\)` | Taux fixe par le trader. |) Tj
+T*
+(| `converted_amount` | `NUMERIC\(19, 4\)` | Resultat `amount * rate`. |) Tj
+T*
+(| `risk_level` | `VARCHAR\(50\)` | Mis a jour par l'analyse AML. |) Tj
+T*
+(| `risk_score` | `NUMERIC\(5, 2\)` | Mis a jour par l'analyse AML. |) Tj
+T*
+ET
+endstream
+endobj
+39 0 obj
+<< /Type /Page /Parent 42 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 38 0 R >>
+endobj
+40 0 obj
+<< /Length 2232 >>
+stream
+BT
+/F1 8.5 Tf
+50 800 Td
+12 TL
+(| `status` | `VARCHAR\(50\)` | Statut transactionnel. |) Tj
+T*
+(| `trader_id` | `INT` | Reference `traders\(id\)`. |) Tj
+T*
+(| `customer_id` | `INT` | Reference `customers\(id\)`. |) Tj
+T*
+(| `created_at`, `updated_at`, `deleted_at` | `TIMESTAMPTZ` | Timestamps. |) Tj
+T*
+() Tj
+T*
+(### `risk_flags`) Tj
+T*
+() Tj
+T*
+(| Colonne | Type | Notes |) Tj
+T*
+(| --- | --- | --- |) Tj
+T*
+(| `id` | `SERIAL` | Cle primaire. |) Tj
+T*
+(| `flag` | `VARCHAR\(255\)` | Code de l'alerte. |) Tj
+T*
+(| `reason` | `TEXT` | Explication lisible. |) Tj
+T*
+(| `score` | `NUMERIC\(5, 2\)` | Score associe. |) Tj
+T*
+(| `level` | `VARCHAR\(50\)` | Niveau optionnel. |) Tj
+T*
+(| `transaction_id` | `INT` | Transaction concernee. |) Tj
+T*
+(| `trader_id` | `INT` | Trader concerne. |) Tj
+T*
+(| `customer_id` | `INT` | Client concerne. |) Tj
+T*
+(| `created_at`, `updated_at`, `deleted_at` | `TIMESTAMPTZ` | Timestamps. |) Tj
+T*
+() Tj
+T*
+(## Tests) Tj
+T*
+() Tj
+T*
+(```bash) Tj
+T*
+(go test ./...) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(Dans un environnement ou le cache Go utilisateur n'est pas accessible:) Tj
+T*
+() Tj
+T*
+(```bash) Tj
+T*
+(GOCACHE=/private/tmp/fx-app-api-go-build go test ./...) Tj
+T*
+(```) Tj
+T*
+() Tj
+T*
+(## Limitations Actuelles) Tj
+T*
+() Tj
+T*
+(- `POST /transactions` persiste la transaction avant l'analyse AML/KYC; une erreur d'analyse ) Tj
+T*
+(apres insertion n'est pas encore rollbackee dans une transaction SQL.) Tj
+T*
+(- Les regles AML sont codees en dur, pas encore configurees en base ou fichier.) Tj
+T*
+(- `RuleConfig.Enabled` existe mais n'est pas encore utilise pour desactiver une regle.) Tj
+T*
+(- Pas encore de screening sanctions, PEP, listes noires ou adverse media.) Tj
+T*
+(- Pas encore de workflow d'investigation complet pour les alertes \(`OPEN`, `IN_REVIEW`, ) Tj
+T*
+(`RESOLVED`, `FALSE_POSITIVE`\).) Tj
+T*
+(- Pas encore de gestion documentaire KYC: documents, expiration, verification de piece, ) Tj
+T*
+(justificatif d'adresse.) Tj
+T*
+(- Pas encore d'authentification/RBAC actif sur les routes.) Tj
+T*
+(- Les erreurs de contraintes SQL sont encore renvoyees en `500`.) Tj
+T*
+(- Les formats metier de `currency`, `status`, `type`, `role` ne sont pas encore normalises par ) Tj
+T*
+(enum stricte.) Tj
+T*
+ET
+endstream
+endobj
+41 0 obj
+<< /Type /Page /Parent 42 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 40 0 R >>
+endobj
+42 0 obj
+<< /Type /Pages /Kids [3 0 R 5 0 R 7 0 R 9 0 R 11 0 R 13 0 R 15 0 R 17 0 R 19 0 R 21 0 R 23 0 R 25 0 R 27 0 R 29 0 R 31 0 R 33 0 R 35 0 R 37 0 R 39 0 R 41 0 R] /Count 20 >>
+endobj
+43 0 obj
+<< /Type /Catalog /Pages 42 0 R >>
+endobj
+xref
+0 44
+0000000000 65535 f 
+0000000015 00000 n 
+0000000083 00000 n 
+0000002241 00000 n 
+0000002368 00000 n 
+0000004572 00000 n 
+0000004699 00000 n 
+0000006638 00000 n 
+0000006765 00000 n 
+0000008256 00000 n 
+0000008383 00000 n 
+0000010049 00000 n 
+0000010178 00000 n 
+0000011704 00000 n 
+0000011833 00000 n 
+0000013727 00000 n 
+0000013856 00000 n 
+0000015356 00000 n 
+0000015485 00000 n 
+0000016961 00000 n 
+0000017090 00000 n 
+0000018505 00000 n 
+0000018634 00000 n 
+0000020012 00000 n 
+0000020141 00000 n 
+0000021902 00000 n 
+0000022031 00000 n 
+0000023552 00000 n 
+0000023681 00000 n 
+0000025333 00000 n 
+0000025462 00000 n 
+0000027363 00000 n 
+0000027492 00000 n 
+0000029061 00000 n 
+0000029190 00000 n 
+0000031055 00000 n 
+0000031184 00000 n 
+0000033422 00000 n 
+0000033551 00000 n 
+0000036721 00000 n 
+0000036850 00000 n 
+0000039135 00000 n 
+0000039264 00000 n 
+0000039453 00000 n 
+trailer
+<< /Size 44 /Root 43 0 R >>
+startxref
+39504
+%%EOF
