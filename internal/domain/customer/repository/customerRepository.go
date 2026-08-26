@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"fx-app-api/internal/domain/customer/entity"
 	"fx-app-api/internal/storage"
+	"strings"
 	"time"
 )
 
@@ -42,12 +43,25 @@ func (r *customerRepository) Init() error {
 			ADD COLUMN IF NOT EXISTS risk_level VARCHAR(50),
 			ADD COLUMN IF NOT EXISTS risk_score NUMERIC(5, 2) DEFAULT 0;`
 
-	_, err := r.store.DB().Exec(alterTableSQL)
+	if _, err := r.store.DB().Exec(alterTableSQL); err != nil {
+		return err
+	}
+
+	uniquePhoneSQL := `
+		CREATE UNIQUE INDEX IF NOT EXISTS customers_phone_unique_idx
+		ON customers (phone)
+		WHERE phone IS NOT NULL AND phone <> '' AND deleted_at IS NULL;`
+
+	_, err := r.store.DB().Exec(uniquePhoneSQL)
 	return err
 }
 
 // CreateCustomer insère un nouveau client dans la base de données.
 func (r *customerRepository) CreateCustomer(customer *entity.Customer) error {
+	if normalizedPhone, err := storage.NormalizePhone(customer.Phone); err == nil {
+		customer.Phone = normalizedPhone
+	}
+
 	query := `
 		INSERT INTO customers (
 			full_name, id_number, id_type, phone, address, created_at, updated_at
@@ -109,8 +123,30 @@ func (r *customerRepository) GetCustomer(id int) (*entity.Customer, error) {
 	return customer, nil
 }
 
+// GetCustomerByPhone récupère un client par son numéro de téléphone normalisé.
+func (r *customerRepository) GetCustomerByPhone(phone string) (*entity.Customer, error) {
+	normalizedPhone, err := storage.NormalizePhone(phone)
+	if err != nil {
+		return nil, err
+	}
+
+	customer, err := r.getCustomerByPhone(normalizedPhone)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("%w: %s", storage.ErrCustomerNotFound, normalizedPhone)
+		}
+		return nil, fmt.Errorf("failed to get customer by phone: %w", err)
+	}
+
+	return customer, nil
+}
+
 // UpdateCustomer met à jour les informations d'un client existant dans la base de données.
 func (r *customerRepository) UpdateCustomer(customer *entity.Customer) error {
+	if normalizedPhone, err := storage.NormalizePhone(customer.Phone); err == nil {
+		customer.Phone = normalizedPhone
+	}
+
 	query := `
 		UPDATE customers SET
 			full_name = $1, id_number = $2, id_type = $3, phone = $4, address = $5,
@@ -132,4 +168,30 @@ func (r *customerRepository) UpdateCustomer(customer *entity.Customer) error {
 	)
 
 	return err
+}
+
+func (r *customerRepository) getCustomerByPhone(normalizedPhone string) (*entity.Customer, error) {
+	query := `
+		SELECT id, full_name, id_number, COALESCE(id_type, ''), COALESCE(phone, ''),
+		       COALESCE(address, ''), created_at, updated_at, deleted_at,
+		       COALESCE(risk_level, ''), COALESCE(risk_score, 0)
+		FROM customers
+		WHERE phone = $1 AND deleted_at IS NULL`
+
+	customer := &entity.Customer{}
+	err := r.store.DB().QueryRow(query, strings.TrimSpace(normalizedPhone)).Scan(
+		&customer.ID,
+		&customer.FullName,
+		&customer.IDNumber,
+		&customer.IDType,
+		&customer.Phone,
+		&customer.Address,
+		&customer.CreatedAt,
+		&customer.UpdatedAt,
+		&customer.DeletedAt,
+		&customer.RiskLevel,
+		&customer.RiskScore,
+	)
+
+	return customer, err
 }

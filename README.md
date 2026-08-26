@@ -11,6 +11,7 @@ API Go pour la gestion de transactions de change, avec profils KYC clients, anal
 - Consultation et mise a jour du profil KYC.
 - Recalcul manuel du risque KYC client.
 - Creation de transaction FX avec conversion calculee depuis le taux fixe par le trader.
+- Creation de transaction pour nouveau client ou client existant recherche par telephone.
 - Analyse AML/KYC synchrone apres creation de transaction.
 - Creation automatique de `risk_flags` quand une regle AML/KYC est declenchee.
 - Consultation, filtrage, creation manuelle et suppression logique des `risk_flags`.
@@ -167,7 +168,7 @@ Toutes les autres routes exposees par `server.go` passent par la verification du
 | `GET` | `/customers/{id}/kyc` | Recuperer le profil KYC d'un client. |
 | `PUT` | `/customers/{id}/kyc` | Mettre a jour le KYC et recalculer le risque. |
 | `POST` | `/customers/{id}/kyc/reassess` | Recalculer le risque KYC du client. |
-| `POST` | `/transactions` | Creer une transaction avec conversion. |
+| `POST` | `/transactions` | Creer une transaction avec conversion, pour un nouveau client ou un client existant. |
 | `GET` | `/transactions/{id}` | Recuperer une transaction. |
 | `POST` | `/risk-flags` | Creer une alerte de risque manuelle. |
 | `GET` | `/risk-flags` | Lister les alertes de risque. |
@@ -492,7 +493,45 @@ Response `200 OK`: objet `Customer` apres recalcul du risque.
 
 ### `POST /transactions`
 
-Body:
+Body nouveau client:
+
+```json
+{
+  "client": {
+    "first_name": "Jean",
+    "last_name": "Dupont",
+    "phone": "+243900000000"
+  },
+  "transaction": {
+    "amount": 12500.75,
+    "currency": "USD",
+    "target_currency": "CDF",
+    "type": "deposit",
+    "rate": 2845.5,
+    "status": "PENDING",
+    "trader_id": 1
+  }
+}
+```
+
+Body client existant:
+
+```json
+{
+  "client_phone": "+243900000000",
+  "transaction": {
+    "amount": 12500.75,
+    "currency": "USD",
+    "target_currency": "CDF",
+    "type": "deposit",
+    "rate": 2845.5,
+    "status": "PENDING",
+    "trader_id": 1
+  }
+}
+```
+
+Body historique toujours accepte:
 
 ```json
 {
@@ -508,6 +547,14 @@ Body:
 ```
 
 Response `201 Created`: objet `Transaction` apres conversion et analyse AML/KYC synchrone.
+
+Erreurs principales:
+
+- `400 Bad Request`: payload invalide, telephone invalide, champs transaction manquants, ou plusieurs references client fournies.
+- `404 Not Found`: `client_phone` ne correspond a aucun client existant.
+- `409 Conflict`: tentative de creation d'un nouveau client avec un telephone deja utilise.
+
+Le backend normalise toujours le numero de telephone avant la recherche. Pour un nouveau client, le client et la transaction sont crees dans une meme transaction SQL: si l'une des deux insertions echoue, toute l'operation est annulee.
 
 ```json
 {
@@ -897,6 +944,46 @@ POST /transactions
 Content-Type: application/json
 ```
 
+Nouveau client:
+
+```json
+{
+  "client": {
+    "first_name": "Jean",
+    "last_name": "Dupont",
+    "phone": "+243900000000"
+  },
+  "transaction": {
+    "amount": 12500.75,
+    "currency": "USD",
+    "target_currency": "CDF",
+    "type": "deposit",
+    "rate": 2845.5,
+    "status": "PENDING",
+    "trader_id": 1
+  }
+}
+```
+
+Client existant:
+
+```json
+{
+  "client_phone": "+243900000000",
+  "transaction": {
+    "amount": 12500.75,
+    "currency": "USD",
+    "target_currency": "CDF",
+    "type": "deposit",
+    "rate": 2845.5,
+    "status": "PENDING",
+    "trader_id": 1
+  }
+}
+```
+
+Format historique avec `customer_id`:
+
 ```json
 {
   "amount": 12500.75,
@@ -919,7 +1006,14 @@ Content-Type: application/json
 | `rate` | number | oui | Taux fixe par le trader. Doit etre `> 0`. |
 | `status` | string | non | Statut initial. |
 | `trader_id` | number | oui | Identifiant du trader. |
-| `customer_id` | number | oui | Identifiant du client. |
+| `customer_id` | number | oui si pas de `client` ni `client_phone` | Identifiant du client. |
+| `client_phone` | string | oui pour client existant | Telephone du client existant, normalise avant recherche. |
+| `client` | object | oui pour nouveau client | Informations du nouveau client a creer. |
+| `transaction` | object | oui pour les nouveaux formats | Informations de la transaction. |
+
+Pour un nouveau client, le backend verifie d'abord que le telephone normalise n'existe pas. Si le telephone existe deja, la reponse est `409 Conflict`. Si le telephone est libre, le client et la transaction sont crees atomiquement dans une transaction SQL.
+
+Pour un client existant, le backend recherche le client via `client_phone`, recupere son identifiant et associe la transaction sans modifier les informations du client. Si aucun client ne correspond au telephone fourni, la reponse est `404 Not Found`.
 
 ### Calcul De Conversion
 
@@ -1139,7 +1233,7 @@ Ce recalcul manuel est plus simple que l'analyse AML post-transaction: il ne lan
 | `full_name` | `VARCHAR(255)` | Obligatoire. |
 | `id_number` | `VARCHAR(100)` | Unique, obligatoire. |
 | `id_type` | `VARCHAR(50)` | Type de piece. |
-| `phone` | `VARCHAR(50)` | Telephone. |
+| `phone` | `VARCHAR(50)` | Telephone normalise, utilise pour rechercher le client. Unique pour les clients actifs. |
 | `address` | `TEXT` | Adresse. |
 | `risk_level` | `VARCHAR(50)` | `LOW`, `MEDIUM`, `HIGH`, `CRITICAL`. |
 | `risk_score` | `NUMERIC(5, 2)` | Defaut `0`. |

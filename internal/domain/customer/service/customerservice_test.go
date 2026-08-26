@@ -35,6 +35,15 @@ func (s *fakeCustomerStorage) GetCustomer(id int) (*entity.Customer, error) {
 	return cloneCustomer(customer), nil
 }
 
+func (s *fakeCustomerStorage) GetCustomerByPhone(phone string) (*entity.Customer, error) {
+	for _, customer := range s.customers {
+		if customer.Phone == phone {
+			return cloneCustomer(customer), nil
+		}
+	}
+	return nil, fmt.Errorf("customer with phone %s not found", phone)
+}
+
 type fakeKYCProfileStorage struct {
 	profiles map[int]*CustomerKYCProfile
 }
