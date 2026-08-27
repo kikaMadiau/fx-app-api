@@ -1,0 +1,61 @@
+{
+  "transaction_rules": [
+    {
+      "type": "high_amount",
+      "name": "HIGH_TRANSACTION_AMOUNT",
+      "score": 30,
+      "enabled": true,
+      "threshold_amount": 10000
+    },
+    {
+      "type": "cumulative_volume",
+      "name": "CUMULATIVE_VOLUME_24H",
+      "score": 35,
+      "enabled": true,
+      "threshold_amount": 20000,
+      "window": "24h"
+    },
+    {
+      "type": "cumulative_volume",
+      "name": "CUMULATIVE_VOLUME_30D",
+      "score": 40,
+      "enabled": true,
+      "threshold_amount": 100000,
+      "window": "720h"
+    },
+    {
+      "type": "transaction_frequency",
+      "name": "UNUSUAL_FREQUENCY_24H",
+      "score": 25,
+      "enabled": true,
+      "threshold_count": 10,
+      "window": "24h"
+    }
+  ],
+  "customer_rules": [
+    {
+      "type": "insufficient_kyc_status",
+      "name": "INSUFFICIENT_KYC_STATUS",
+      "score": 45,
+      "enabled": true
+    },
+    {
+      "type": "inconsistent_profile",
+      "name": "INCONSISTENT_KYC_PROFILE",
+      "score": 35,
+      "enabled": true
+    },
+    {
+      "type": "business_activity",
+      "name": "BUSINESS_ACTIVITY_PROFILE",
+      "score": 15,
+      "enabled": true
+    },
+    {
+      "type": "expected_volume_exceeded",
+      "name": "EXPECTED_VOLUME_EXCEEDED",
+      "score": 30,
+      "enabled": true
+    }
+  ]
+}

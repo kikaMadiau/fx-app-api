@@ -19,9 +19,6 @@ type Claims struct {
 	jwt.RegisteredClaims
 }
 
-// AuthMiddleware vérifie le token JWT et injecte l'utilisateur dans le contexte.
-// Note: Ce middleware ne gère que l'AUTHENTIFICATION. L'AUTORISATION (vérification des rôles)
-// doit être faite dans un autre middleware ou dans le handler.
 func AuthMiddleware(traderRepo storage.TraderStorage) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -43,31 +40,25 @@ func AuthMiddleware(traderRepo storage.TraderStorage) func(http.Handler) http.Ha
 				return
 			}
 
-			// Le token est valide, on récupère l'utilisateur complet depuis la BDD
-			// pour avoir les informations les plus à jour (ex: si ses rôles ont changé).
 			currentUser, err := traderRepo.GetTraderByEmail(claims.Email)
 			if err != nil || currentUser == nil {
 				http.Error(w, `{"message": "Utilisateur du jeton non trouvé"}`, http.StatusUnauthorized)
 				return
 			}
 
-			// Injecter l'utilisateur complet dans le contexte
 			ctx := traderservices.WithUser(r.Context(), currentUser)
 
-			// Continuer vers la route suivante avec le nouveau contexte
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }
 
-// RoleMiddleware vérifie si l'utilisateur dans le contexte a le rôle requis.
-// Doit être utilisé APRÈS AuthMiddleware.
 func RoleMiddleware(requiredRole string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			user := traderservices.GetUser(r)
 			if user == nil {
-				// Cela ne devrait pas arriver si AuthMiddleware est utilisé avant
+
 				http.Error(w, `{"message": "Utilisateur non authentifié"}`, http.StatusUnauthorized)
 				return
 			}
@@ -93,8 +84,6 @@ func hasRole(roles string, requiredRole string) bool {
 }
 
 /*
-Ancien code qui a été remplacé :
-
 func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// 1. Extraire l'en-tête Authorization

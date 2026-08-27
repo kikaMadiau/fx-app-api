@@ -1,6 +1,8 @@
 package service
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	customerentity "fx-app-api/internal/domain/customer/entity"
 	customerservice "fx-app-api/internal/domain/customer/service"
@@ -8,6 +10,7 @@ import (
 	transactionentity "fx-app-api/internal/domain/transaction/entity"
 	"fx-app-api/internal/storage"
 	"log"
+	"os"
 	"time"
 )
 
@@ -37,6 +40,21 @@ type RuleConfig struct {
 	Window          time.Duration
 }
 
+type riskRulesFile struct {
+	TransactionRules []ruleDefinition `json:"transaction_rules"`
+	CustomerRules    []ruleDefinition `json:"customer_rules"`
+}
+
+type ruleDefinition struct {
+	Type            string   `json:"type"`
+	Name            string   `json:"name"`
+	Score           float64  `json:"score"`
+	Enabled         *bool    `json:"enabled,omitempty"`
+	ThresholdAmount *float64 `json:"threshold_amount,omitempty"`
+	ThresholdCount  *int     `json:"threshold_count,omitempty"`
+	Window          string   `json:"window,omitempty"`
+}
+
 // RiskService orchestre l'analyse de risque.
 type RiskService struct {
 	customerRepo    storage.CustomerStorage
@@ -56,10 +74,7 @@ func NewRiskService(
 	riskFlagRepo storage.RiskFlagStorage,
 	customerService *customerservice.CustomerService,
 ) *RiskService {
-	// TODO: Charger les règles et leur configuration depuis un fichier ou une DB.
-	// Pour l'instant, on les initialise en dur.
-	transactionRules := loadTransactionRules()
-	customerRules := loadCustomerRules()
+	transactionRules, customerRules := loadRules()
 
 	return &RiskService{
 		customerRepo:     customerRepo,
@@ -349,57 +364,179 @@ func (r *ExpectedVolumeExceededRule) Evaluate(ctx *RuleContext) *riskflagentity.
 	return nil
 }
 
-// loadTransactionRules charge la configuration des règles.
-// Dans une vraie application, cela viendrait d'un fichier de config (YAML, JSON) ou d'une DB.
-func loadTransactionRules() []Rule {
-	var rules []Rule
+func loadRules() ([]Rule, []Rule) {
+	configPath := os.Getenv("RISK_RULES_CONFIG_PATH")
+	if configPath == "" {
+		configPath = "config/risk_rules.json"
+	}
 
-	rules = append(rules, &HighAmountRule{
-		Config: RuleConfig{
-			Name:            "HIGH_TRANSACTION_AMOUNT",
-			Score:           30,
-			Enabled:         true,
-			ThresholdAmount: 10000.0,
-		},
-	})
-	rules = append(rules, &CumulativeVolumeRule{
-		Config: RuleConfig{
-			Name:            "CUMULATIVE_VOLUME_24H",
-			Score:           35,
-			Enabled:         true,
-			ThresholdAmount: 20000.0,
-			Window:          24 * time.Hour,
-		},
-	})
-	rules = append(rules, &CumulativeVolumeRule{
-		Config: RuleConfig{
-			Name:            "CUMULATIVE_VOLUME_30D",
-			Score:           40,
-			Enabled:         true,
-			ThresholdAmount: 100000.0,
-			Window:          30 * 24 * time.Hour,
-		},
-	})
-	rules = append(rules, &TransactionFrequencyRule{
-		Config: RuleConfig{
-			Name:           "UNUSUAL_FREQUENCY_24H",
-			Score:          25,
-			Enabled:        true,
-			ThresholdCount: 10,
-			Window:         24 * time.Hour,
-		},
-	})
+	transactionRules, customerRules, err := loadRulesFromFile(configPath)
+	if err == nil {
+		return transactionRules, customerRules
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		log.Printf("Warning: failed to load risk rules from %s: %v. Falling back to defaults", configPath, err)
+	}
+
+	defaults := defaultRiskRulesFile()
+	return buildTransactionRules(defaults.TransactionRules), buildCustomerRules(defaults.CustomerRules)
+}
+
+func loadRulesFromFile(path string) ([]Rule, []Rule, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer file.Close()
+
+	var config riskRulesFile
+	if err := json.NewDecoder(file).Decode(&config); err != nil {
+		return nil, nil, fmt.Errorf("decode risk rules config: %w", err)
+	}
+
+	transactionRules := buildTransactionRules(config.TransactionRules)
+	customerRules := buildCustomerRules(config.CustomerRules)
+	if len(transactionRules) == 0 && len(customerRules) == 0 {
+		return nil, nil, errors.New("risk rules config does not define any enabled rule")
+	}
+
+	return transactionRules, customerRules, nil
+}
+
+func buildTransactionRules(definitions []ruleDefinition) []Rule {
+	var rules []Rule
+	for _, definition := range definitions {
+		config, ok := ruleConfigFromDefinition(definition)
+		if !ok {
+			continue
+		}
+
+		switch definition.Type {
+		case "high_amount":
+			rules = append(rules, &HighAmountRule{Config: config})
+		case "cumulative_volume":
+			rules = append(rules, &CumulativeVolumeRule{Config: config})
+		case "transaction_frequency":
+			rules = append(rules, &TransactionFrequencyRule{Config: config})
+		default:
+			log.Printf("Warning: unknown transaction risk rule type %q", definition.Type)
+		}
+	}
 
 	return rules
 }
 
-func loadCustomerRules() []Rule {
-	return []Rule{
-		&InsufficientKYCStatusRule{Config: RuleConfig{Name: "INSUFFICIENT_KYC_STATUS", Score: 45, Enabled: true}},
-		&InconsistentProfileRule{Config: RuleConfig{Name: "INCONSISTENT_KYC_PROFILE", Score: 35, Enabled: true}},
-		&BusinessActivityRule{Config: RuleConfig{Name: "BUSINESS_ACTIVITY_PROFILE", Score: 15, Enabled: true}},
-		&ExpectedVolumeExceededRule{Config: RuleConfig{Name: "EXPECTED_VOLUME_EXCEEDED", Score: 30, Enabled: true}},
+func buildCustomerRules(definitions []ruleDefinition) []Rule {
+	var rules []Rule
+	for _, definition := range definitions {
+		config, ok := ruleConfigFromDefinition(definition)
+		if !ok {
+			continue
+		}
+
+		switch definition.Type {
+		case "insufficient_kyc_status":
+			rules = append(rules, &InsufficientKYCStatusRule{Config: config})
+		case "inconsistent_profile":
+			rules = append(rules, &InconsistentProfileRule{Config: config})
+		case "business_activity":
+			rules = append(rules, &BusinessActivityRule{Config: config})
+		case "expected_volume_exceeded":
+			rules = append(rules, &ExpectedVolumeExceededRule{Config: config})
+		default:
+			log.Printf("Warning: unknown customer risk rule type %q", definition.Type)
+		}
 	}
+
+	return rules
+}
+
+func ruleConfigFromDefinition(definition ruleDefinition) (RuleConfig, bool) {
+	enabled := true
+	if definition.Enabled != nil {
+		enabled = *definition.Enabled
+	}
+	if !enabled {
+		return RuleConfig{}, false
+	}
+
+	config := RuleConfig{
+		Name:    definition.Name,
+		Score:   definition.Score,
+		Enabled: enabled,
+	}
+	if definition.ThresholdAmount != nil {
+		config.ThresholdAmount = *definition.ThresholdAmount
+	}
+	if definition.ThresholdCount != nil {
+		config.ThresholdCount = *definition.ThresholdCount
+	}
+	if definition.Window != "" {
+		window, err := time.ParseDuration(definition.Window)
+		if err != nil {
+			log.Printf("Warning: invalid window %q for risk rule %q: %v", definition.Window, definition.Name, err)
+			return RuleConfig{}, false
+		}
+		config.Window = window
+	}
+
+	return config, true
+}
+
+func defaultRiskRulesFile() riskRulesFile {
+	return riskRulesFile{
+		TransactionRules: []ruleDefinition{
+			{
+				Type:            "high_amount",
+				Name:            "HIGH_TRANSACTION_AMOUNT",
+				Score:           30,
+				Enabled:         boolPtr(true),
+				ThresholdAmount: float64Ptr(10000.0),
+			},
+			{
+				Type:            "cumulative_volume",
+				Name:            "CUMULATIVE_VOLUME_24H",
+				Score:           35,
+				Enabled:         boolPtr(true),
+				ThresholdAmount: float64Ptr(20000.0),
+				Window:          "24h",
+			},
+			{
+				Type:            "cumulative_volume",
+				Name:            "CUMULATIVE_VOLUME_30D",
+				Score:           40,
+				Enabled:         boolPtr(true),
+				ThresholdAmount: float64Ptr(100000.0),
+				Window:          "720h",
+			},
+			{
+				Type:           "transaction_frequency",
+				Name:           "UNUSUAL_FREQUENCY_24H",
+				Score:          25,
+				Enabled:        boolPtr(true),
+				ThresholdCount: intPtr(10),
+				Window:         "24h",
+			},
+		},
+		CustomerRules: []ruleDefinition{
+			{Type: "insufficient_kyc_status", Name: "INSUFFICIENT_KYC_STATUS", Score: 45, Enabled: boolPtr(true)},
+			{Type: "inconsistent_profile", Name: "INCONSISTENT_KYC_PROFILE", Score: 35, Enabled: boolPtr(true)},
+			{Type: "business_activity", Name: "BUSINESS_ACTIVITY_PROFILE", Score: 15, Enabled: boolPtr(true)},
+			{Type: "expected_volume_exceeded", Name: "EXPECTED_VOLUME_EXCEEDED", Score: 30, Enabled: boolPtr(true)},
+		},
+	}
+}
+
+func boolPtr(value bool) *bool {
+	return &value
+}
+
+func float64Ptr(value float64) *float64 {
+	return &value
+}
+
+func intPtr(value int) *int {
+	return &value
 }
 
 func sumTransactionsSince(transactions []*transactionentity.Transaction, since time.Time) float64 {

@@ -413,12 +413,6 @@ func isTrustedProxy(ipString string, trustedProxies []*net.IPNet) bool {
 	return false
 }
 
-// ------------------------------------------------------
-// Context helper
-// ------------------------------------------------------
-
-// ClientIPKey permet éventuellement de récupérer
-// l'IP dans les handlers suivants.
 type rateLimitContextKey string
 
 const ClientIPKey rateLimitContextKey = "client_ip"

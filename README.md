@@ -148,6 +148,7 @@ Expiration actuelle du token: 24 heures.
 Routes publiques:
 
 - `POST /auth/trader/login`
+- `GET /analysais`
 - `POST /traders`
 
 Toutes les autres routes exposees par `server.go` passent par la verification du bearer token.
@@ -157,6 +158,7 @@ Toutes les autres routes exposees par `server.go` passent par la verification du
 | Methode | Route | Description |
 | --- | --- | --- |
 | `POST` | `/auth/trader/login` | Authentifier un trader et obtenir un JWT. |
+| `GET` | `/analysais` | Lister les analyses de change disponibles. |
 | `POST` | `/traders` | Creer un cambiste. |
 | `GET` | `/traders/{id}` | Recuperer un cambiste. |
 | `PUT` | `/traders/{id}` | Mettre a jour un cambiste. |

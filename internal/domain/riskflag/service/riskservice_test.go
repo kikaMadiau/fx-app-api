@@ -4,6 +4,8 @@ import (
 	customerentity "fx-app-api/internal/domain/customer/entity"
 	customerservice "fx-app-api/internal/domain/customer/service"
 	transactionentity "fx-app-api/internal/domain/transaction/entity"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -75,5 +77,70 @@ func TestKYCAndCustomerRules(t *testing.T) {
 				t.Fatalf("expected flag for rule %s", rule.Name())
 			}
 		})
+	}
+}
+
+func TestLoadRulesFromFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "risk_rules.json")
+	config := []byte(`{
+		"transaction_rules": [
+			{
+				"type": "high_amount",
+				"name": "CUSTOM_HIGH_AMOUNT",
+				"score": 12,
+				"enabled": true,
+				"threshold_amount": 5000
+			},
+			{
+				"type": "transaction_frequency",
+				"name": "DISABLED_FREQUENCY",
+				"score": 99,
+				"enabled": false,
+				"threshold_count": 1,
+				"window": "1h"
+			}
+		],
+		"customer_rules": [
+			{
+				"type": "business_activity",
+				"name": "CUSTOM_BUSINESS_ACTIVITY",
+				"score": 7,
+				"enabled": true
+			}
+		]
+	}`)
+	if err := os.WriteFile(path, config, 0o600); err != nil {
+		t.Fatalf("failed to write risk rules config: %v", err)
+	}
+
+	transactionRules, customerRules, err := loadRulesFromFile(path)
+	if err != nil {
+		t.Fatalf("expected rules to load: %v", err)
+	}
+	if len(transactionRules) != 1 {
+		t.Fatalf("expected 1 enabled transaction rule, got %d", len(transactionRules))
+	}
+	if transactionRules[0].Name() != "CUSTOM_HIGH_AMOUNT" {
+		t.Fatalf("expected custom transaction rule name, got %s", transactionRules[0].Name())
+	}
+	if len(customerRules) != 1 {
+		t.Fatalf("expected 1 customer rule, got %d", len(customerRules))
+	}
+	if customerRules[0].Name() != "CUSTOM_BUSINESS_ACTIVITY" {
+		t.Fatalf("expected custom customer rule name, got %s", customerRules[0].Name())
+	}
+}
+
+func TestDefaultRiskRulesMatchExpectedCatalog(t *testing.T) {
+	defaults := defaultRiskRulesFile()
+
+	transactionRules := buildTransactionRules(defaults.TransactionRules)
+	customerRules := buildCustomerRules(defaults.CustomerRules)
+
+	if len(transactionRules) != 4 {
+		t.Fatalf("expected 4 default transaction rules, got %d", len(transactionRules))
+	}
+	if len(customerRules) != 4 {
+		t.Fatalf("expected 4 default customer rules, got %d", len(customerRules))
 	}
 }

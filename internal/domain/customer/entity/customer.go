@@ -7,6 +7,8 @@ type Customer struct {
 	FullName  string     `json:"full_name"`
 	IDNumber  string     `json:"id_number"`
 	IDType    string     `json:"id_type"`
+	IDfile    string     `json:"id_file"`
+	Email     string     `json:"email"`
 	Phone     string     `json:"phone"`
 	Address   string     `json:"address"`
 	CreatedAt time.Time  `json:"created_at"`

@@ -15,7 +15,7 @@ const (
 	defaultPublicKeyPath  = "jwt/public.pem"
 )
 
-// Claims defines the structure of the data (claims) contained in the JWT.
+// Claims defines the structure of the data in the JWT.
 type Claims struct {
 	Name   string   `json:"name"`
 	Email  string   `json:"email"`
