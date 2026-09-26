@@ -16,6 +16,9 @@ API Go pour la gestion de transactions de change, avec profils KYC clients, anal
 - Creation automatique de `risk_flags` quand une regle AML/KYC est declenchee.
 - Consultation, filtrage, creation manuelle et suppression logique des `risk_flags`.
 - Initialisation automatique des tables PostgreSQL au demarrage.
+- RBAC (Role-Based Access Control) par role TRADER/MANAGER.
+- Rollback SQL automatique si l'analyse AML echoue apres creation de transaction.
+- Transactions SQL englobant creation + analyse AML pour la coherence des donnees.
 
 ## Stack
 
@@ -1305,10 +1308,28 @@ GOCACHE=/private/tmp/fx-app-api-go-build go test ./...
 
 ## Limitations Actuelles
 
-- `POST /transactions` persiste la transaction avant l'analyse AML/KYC; une erreur d'analyse apres insertion n'est pas encore rollbackee dans une transaction SQL.
 - `RuleConfig.Enabled` existe mais n'est pas encore utilise pour desactiver une regle.
 - Pas encore de screening sanctions, PEP, listes noires ou adverse media.
 - Pas encore de workflow d'investigation complet pour les alertes (`OPEN`, `IN_REVIEW`, `RESOLVED`, `FALSE_POSITIVE`).
 - Pas encore de gestion documentaire KYC: documents, expiration, verification de piece, justificatif d'adresse.
-- Authentification JWT active, mais pas encore de RBAC par role.
 - Les formats metier de `currency`, `status`, `type`, `role` ne sont pas encore normalises par enum stricte.
+
+## Historique Des Modifications
+
+### 2026-08-21
+
+- **RBAC par role** : Connexion du `RoleMiddleware` aux routes avec definition des permissions par endpoint.
+  - Routes TRADER/MANAGER : traders, customers, transactions, risk-flags
+  - Routes MANAGER uniquement : suppression de traders et risk-flags
+  - Routes publiques : `/auth/trader/login`, `/analysais`
+
+- **Rollback SQL apres analyse AML** : Les transactions SQL englobent maintenant la creation de transaction et l'analyse AML.
+  - Si l'analyse AML echoue, toute la transaction est rollbackee
+  - Aucune donnee n'est persistee si l'analyse echoue
+  - Nouvelles methodes `WithTx` dans les repositories pour supporter les transactions SQL
+
+### 2026-08-20
+
+- **Analyse AML/KYC synchrone** : L'analyse est executee apres la creation de transaction et avant la reponse HTTP.
+- **Scoring de risque** : Calcul automatique de `risk_score` et `risk_level` pour les transactions et les clients.
+- **Risk flags** : Creation automatique d'alertes quand les regles AML/KYC sont declenchees.
