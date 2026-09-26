@@ -66,6 +66,9 @@ type RiskService struct {
 	// Moteur de règles
 	transactionRules []Rule
 	customerRules    []Rule
+
+	// Service d'investigation des risk_flags
+	Investigation *InvestigationService
 }
 
 // NewRiskService crée une nouvelle instance de RiskService.
@@ -76,6 +79,7 @@ func NewRiskService(
 	customerService *customerservice.CustomerService,
 ) *RiskService {
 	transactionRules, customerRules := loadRules()
+	investigationService := NewInvestigationService(riskFlagRepo)
 
 	return &RiskService{
 		customerRepo:     customerRepo,
@@ -84,6 +88,7 @@ func NewRiskService(
 		customerService:  customerService,
 		transactionRules: transactionRules,
 		customerRules:    customerRules,
+		Investigation:    investigationService,
 	}
 }
 
