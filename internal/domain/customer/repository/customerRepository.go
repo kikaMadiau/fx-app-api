@@ -9,18 +9,23 @@ import (
 	"time"
 )
 
-// customerRepository est l'implémentation concrète de storage.CustomerStorage.
-type customerRepository struct {
+// CustomerRepository est l'implémentation concrète de storage.CustomerStorage.
+type CustomerRepository struct {
 	store *storage.PostgresStore
 }
 
 // NewCustomerRepository crée une nouvelle instance qui implémente storage.CustomerStorage.
 func NewCustomerRepository(store *storage.PostgresStore) storage.CustomerStorage {
-	return &customerRepository{store: store}
+	return &CustomerRepository{store: store}
+}
+
+// Store retourne la store PostgreSQL sous-jacente.
+func (r *CustomerRepository) Store() *storage.PostgresStore {
+	return r.store
 }
 
 // Init crée la table 'customers' si elle n'existe pas.
-func (r *customerRepository) Init() error {
+func (r *CustomerRepository) Init() error {
 	createTableSQL := `
 		CREATE TABLE IF NOT EXISTS customers (
 			id SERIAL PRIMARY KEY,
@@ -57,7 +62,7 @@ func (r *customerRepository) Init() error {
 }
 
 // CreateCustomer insère un nouveau client dans la base de données.
-func (r *customerRepository) CreateCustomer(customer *entity.Customer) error {
+func (r *CustomerRepository) CreateCustomer(customer *entity.Customer) error {
 	if normalizedPhone, err := storage.NormalizePhone(customer.Phone); err == nil {
 		customer.Phone = normalizedPhone
 	}
@@ -90,7 +95,7 @@ func (r *customerRepository) CreateCustomer(customer *entity.Customer) error {
 }
 
 // GetCustomer récupère un client par son ID.
-func (r *customerRepository) GetCustomer(id int) (*entity.Customer, error) {
+func (r *CustomerRepository) GetCustomer(id int) (*entity.Customer, error) {
 	query := `
 		SELECT id, full_name, id_number, COALESCE(id_type, ''), COALESCE(phone, ''),
 		       COALESCE(address, ''), created_at, updated_at, deleted_at,
@@ -124,7 +129,7 @@ func (r *customerRepository) GetCustomer(id int) (*entity.Customer, error) {
 }
 
 // GetCustomerByPhone récupère un client par son numéro de téléphone normalisé.
-func (r *customerRepository) GetCustomerByPhone(phone string) (*entity.Customer, error) {
+func (r *CustomerRepository) GetCustomerByPhone(phone string) (*entity.Customer, error) {
 	normalizedPhone, err := storage.NormalizePhone(phone)
 	if err != nil {
 		return nil, err
@@ -142,7 +147,12 @@ func (r *customerRepository) GetCustomerByPhone(phone string) (*entity.Customer,
 }
 
 // UpdateCustomer met à jour les informations d'un client existant dans la base de données.
-func (r *customerRepository) UpdateCustomer(customer *entity.Customer) error {
+func (r *CustomerRepository) UpdateCustomer(customer *entity.Customer) error {
+	return r.UpdateCustomerWithTx(nil, customer)
+}
+
+// UpdateCustomerWithTx met à jour les informations d'un client existant dans la base de données avec une transaction SQL.
+func (r *CustomerRepository) UpdateCustomerWithTx(tx *sql.Tx, customer *entity.Customer) error {
 	if normalizedPhone, err := storage.NormalizePhone(customer.Phone); err == nil {
 		customer.Phone = normalizedPhone
 	}
@@ -155,22 +165,37 @@ func (r *customerRepository) UpdateCustomer(customer *entity.Customer) error {
 
 	customer.UpdatedAt = time.Now()
 
-	_, err := r.store.DB().Exec(query,
-		customer.FullName,
-		customer.IDNumber,
-		customer.IDType,
-		customer.Phone,
-		customer.Address,
-		customer.RiskLevel,
-		customer.RiskScore,
-		customer.UpdatedAt,
-		customer.ID,
-	)
+	var err error
+	if tx != nil {
+		_, err = tx.Exec(query,
+			customer.FullName,
+			customer.IDNumber,
+			customer.IDType,
+			customer.Phone,
+			customer.Address,
+			customer.RiskLevel,
+			customer.RiskScore,
+			customer.UpdatedAt,
+			customer.ID,
+		)
+	} else {
+		_, err = r.store.DB().Exec(query,
+			customer.FullName,
+			customer.IDNumber,
+			customer.IDType,
+			customer.Phone,
+			customer.Address,
+			customer.RiskLevel,
+			customer.RiskScore,
+			customer.UpdatedAt,
+			customer.ID,
+		)
+	}
 
 	return err
 }
 
-func (r *customerRepository) getCustomerByPhone(normalizedPhone string) (*entity.Customer, error) {
+func (r *CustomerRepository) getCustomerByPhone(normalizedPhone string) (*entity.Customer, error) {
 	query := `
 		SELECT id, full_name, id_number, COALESCE(id_type, ''), COALESCE(phone, ''),
 		       COALESCE(address, ''), created_at, updated_at, deleted_at,

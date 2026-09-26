@@ -1,6 +1,7 @@
 package service
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -88,7 +89,13 @@ func NewRiskService(
 
 // AnalyzeTransactionAndCustomer est la méthode principale appelée après la création d'une transaction.
 // Elle analyse la transaction, puis met à jour le score de risque du client.
+// Si une transaction SQL est fournie, elle l'utilise pour toutes les opérations de mise à jour.
 func (s *RiskService) AnalyzeTransactionAndCustomer(tx *transactionentity.Transaction) error {
+	return s.AnalyzeTransactionAndCustomerWithTx(nil, tx)
+}
+
+// AnalyzeTransactionAndCustomerWithTx analyse la transaction avec une transaction SQL fournie.
+func (s *RiskService) AnalyzeTransactionAndCustomerWithTx(dbTx *sql.Tx, tx *transactionentity.Transaction) error {
 	// 1. Analyse de la transaction individuelle
 	customer, err := s.customerRepo.GetCustomer(tx.CustomerID)
 	if err != nil {
@@ -125,7 +132,7 @@ func (s *RiskService) AnalyzeTransactionAndCustomer(tx *transactionentity.Transa
 	// Sauvegarde des résultats de l'analyse de transaction
 	tx.RiskLevel = transactionRisk.Level
 	tx.RiskScore = transactionRisk.Score
-	if err := s.transactionRepo.UpdateTransaction(tx); err != nil {
+	if err := s.transactionRepo.UpdateTransactionWithTx(dbTx, tx); err != nil {
 		return fmt.Errorf("failed to update transaction with risk scores: %w", err)
 	}
 
@@ -137,7 +144,7 @@ func (s *RiskService) AnalyzeTransactionAndCustomer(tx *transactionentity.Transa
 		flag.TransactionId = tx.ID
 		flag.TraderId = tx.TraderID
 		flag.CustomerId = tx.CustomerID
-		if err := s.riskFlagRepo.CreateRiskFlag(flag); err != nil {
+		if err := s.riskFlagRepo.CreateRiskFlagWithTx(dbTx, flag); err != nil {
 			// Logguer l'erreur mais ne pas bloquer le flux principal
 			log.Printf("Warning: failed to create risk flag for transaction %d: %v", tx.ID, err)
 		}
@@ -146,7 +153,7 @@ func (s *RiskService) AnalyzeTransactionAndCustomer(tx *transactionentity.Transa
 	// Sauvegarde du score de risque global du client
 	customer.RiskScore = transactionRisk.Score + customerRisk.Score
 	customer.RiskLevel = calculateLevel(customer.RiskScore, 90, 60, 30)
-	if err := s.customerRepo.UpdateCustomer(customer); err != nil {
+	if err := s.customerRepo.UpdateCustomerWithTx(dbTx, customer); err != nil {
 		return fmt.Errorf("failed to update customer %d with risk scores: %w", customer.ID, err)
 	}
 

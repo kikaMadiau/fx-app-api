@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	customerentity "fx-app-api/internal/domain/customer/entity"
@@ -50,6 +51,7 @@ type CreateTransactionCustomerRequest struct {
 }
 
 func (h *Handler) HandleCreateTransaction(w http.ResponseWriter, r *http.Request) error {
+
 	var payload CreateTransactionPayload
 	if err := decodeJSON(r, &payload); err != nil {
 		return badRequest("invalid request body", err)
@@ -77,6 +79,9 @@ func (h *Handler) HandleCreateTransaction(w http.ResponseWriter, r *http.Request
 		CustomerID:      req.CustomerID,
 	}
 
+	var dbTx *sql.Tx
+	var errCreate error
+
 	switch {
 	case payload.Client != nil:
 		if strings.TrimSpace(payload.ClientPhone) != "" || req.CustomerID > 0 {
@@ -86,11 +91,12 @@ func (h *Handler) HandleCreateTransaction(w http.ResponseWriter, r *http.Request
 		if err != nil {
 			return err
 		}
-		if err := h.transactionStore.CreateTransactionWithNewCustomer(tx, customer); err != nil {
-			if errors.Is(err, storage.ErrCustomerPhoneExists) {
+		dbTx, errCreate = h.transactionStore.CreateTransactionWithNewCustomer(tx, customer)
+		if errCreate != nil {
+			if errors.Is(errCreate, storage.ErrCustomerPhoneExists) {
 				return conflict("customer with this phone already exists")
 			}
-			return fmt.Errorf("failed to create transaction with new customer: %w", err)
+			return fmt.Errorf("failed to create transaction with new customer: %w", errCreate)
 		}
 	case strings.TrimSpace(payload.ClientPhone) != "":
 		if req.CustomerID > 0 {
@@ -99,23 +105,46 @@ func (h *Handler) HandleCreateTransaction(w http.ResponseWriter, r *http.Request
 		if _, err := storage.NormalizePhone(payload.ClientPhone); err != nil {
 			return badRequest("invalid client_phone", err)
 		}
-		if _, err := h.transactionStore.CreateTransactionForExistingCustomerPhone(tx, payload.ClientPhone); err != nil {
-			if errors.Is(err, storage.ErrCustomerNotFound) {
+		dbTx, _, errCreate = h.transactionStore.CreateTransactionForExistingCustomerPhone(tx, payload.ClientPhone)
+		if errCreate != nil {
+			if errors.Is(errCreate, storage.ErrCustomerNotFound) {
 				return notFound("no customer found with this phone")
 			}
-			return fmt.Errorf("failed to create transaction for existing customer: %w", err)
+			return fmt.Errorf("failed to create transaction for existing customer: %w", errCreate)
 		}
 	default:
 		if req.CustomerID <= 0 {
 			return badRequest("customer_id, client_phone, or client is required", nil)
 		}
-		if err := h.transactionStore.CreateTransaction(tx); err != nil {
-			return fmt.Errorf("failed to create transaction: %w", err)
+		// Commencer une transaction pour englober la création et l'analyse
+		dbTx, errCreate = h.startTransaction()
+		if errCreate != nil {
+			return fmt.Errorf("failed to start transaction: %w", errCreate)
+		}
+		defer func() {
+			if dbTx != nil {
+				_ = dbTx.Rollback()
+			}
+		}()
+		if errCreate = h.transactionStore.CreateTransaction(tx); errCreate != nil {
+			return fmt.Errorf("failed to create transaction: %w", errCreate)
 		}
 	}
 
-	if err := h.riskService.AnalyzeTransactionAndCustomer(tx); err != nil {
+	// Analyse AML dans la même transaction SQL
+	if err := h.riskService.AnalyzeTransactionAndCustomerWithTx(dbTx, tx); err != nil {
+		// Rollback si l'analyse échoue
+		if dbTx != nil {
+			_ = dbTx.Rollback()
+		}
 		return fmt.Errorf("failed to analyze transaction risk: %w", err)
+	}
+
+	// Commit si l'analyse réussit
+	if dbTx != nil {
+		if err := dbTx.Commit(); err != nil {
+			return fmt.Errorf("failed to commit transaction: %w", err)
+		}
 	}
 
 	return WriteJson(w, http.StatusCreated, tx)

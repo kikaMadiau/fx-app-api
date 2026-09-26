@@ -1,10 +1,12 @@
 package handlers
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	customerentity "fx-app-api/internal/domain/customer/entity"
 	customerservice "fx-app-api/internal/domain/customer/service"
+	"fx-app-api/internal/domain/transaction/repository"
 	riskservice "fx-app-api/internal/domain/riskflag/service"
 	traderauthservice "fx-app-api/internal/domain/trader/traderservices"
 	"fx-app-api/internal/storage"
@@ -114,4 +116,9 @@ func customerFromRequest(req UpsertCustomerRequest) *customerentity.Customer {
 		Phone:    req.Phone,
 		Address:  req.Address,
 	}
+}
+
+// startTransaction démarre une nouvelle transaction SQL.
+func (h *Handler) startTransaction() (*sql.Tx, error) {
+	return h.transactionStore.(*repository.TransactionRepository).Store().DB().Begin()
 }

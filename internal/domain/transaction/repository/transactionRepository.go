@@ -13,18 +13,23 @@ import (
 	"github.com/lib/pq"
 )
 
-// transactionRepository est l'implémentation concrète de storage.TransactionStorage.
-type transactionRepository struct {
+// TransactionRepository est l'implémentation concrète de storage.TransactionStorage.
+type TransactionRepository struct {
 	store *storage.PostgresStore
 }
 
 // NewTransactionRepository crée une nouvelle instance qui implémente storage.TransactionStorage.
 func NewTransactionRepository(store *storage.PostgresStore) storage.TransactionStorage {
-	return &transactionRepository{store: store}
+	return &TransactionRepository{store: store}
+}
+
+// Store retourne la store PostgreSQL sous-jacente.
+func (r *TransactionRepository) Store() *storage.PostgresStore {
+	return r.store
 }
 
 // Init crée la table 'transactions' si elle n'existe pas.
-func (r *transactionRepository) Init() error {
+func (r *TransactionRepository) Init() error {
 	createTableSQL := `
 		CREATE TABLE IF NOT EXISTS transactions (
 			id SERIAL PRIMARY KEY,
@@ -60,7 +65,7 @@ func (r *transactionRepository) Init() error {
 }
 
 // CreateTransaction insère une nouvelle transaction dans la base de données.
-func (r *transactionRepository) CreateTransaction(tx *entity.Transaction) error {
+func (r *TransactionRepository) CreateTransaction(tx *entity.Transaction) error {
 	if err := insertTransaction(r.store.DB(), tx); err != nil {
 		return fmt.Errorf("failed to create transaction: %w", err)
 	}
@@ -69,10 +74,11 @@ func (r *transactionRepository) CreateTransaction(tx *entity.Transaction) error 
 }
 
 // CreateTransactionWithNewCustomer crée un client puis sa transaction dans une seule transaction SQL.
-func (r *transactionRepository) CreateTransactionWithNewCustomer(tx *entity.Transaction, customer *customerentity.Customer) error {
+// Elle retourne la transaction SQL non commitée pour permettre au handler de décider du commit/rollback après l'analyse AML.
+func (r *TransactionRepository) CreateTransactionWithNewCustomer(tx *entity.Transaction, customer *customerentity.Customer) (*sql.Tx, error) {
 	normalizedPhone, err := storage.NormalizePhone(customer.Phone)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	customer.Phone = normalizedPhone
 	if strings.TrimSpace(customer.IDNumber) == "" {
@@ -81,70 +87,74 @@ func (r *transactionRepository) CreateTransactionWithNewCustomer(tx *entity.Tran
 
 	dbTx, err := r.store.DB().Begin()
 	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
+		return nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
-	defer rollbackUnlessCommitted(dbTx)
 
 	if _, err := selectCustomerByPhone(dbTx, normalizedPhone, true); err == nil {
-		return storage.ErrCustomerPhoneExists
+		_ = dbTx.Rollback()
+		return nil, storage.ErrCustomerPhoneExists
 	} else if !errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("failed to check existing customer: %w", err)
+		_ = dbTx.Rollback()
+		return nil, fmt.Errorf("failed to check existing customer: %w", err)
 	}
 
 	if err := insertCustomer(dbTx, customer); err != nil {
+		_ = dbTx.Rollback()
 		if isUniqueViolation(err) {
-			return storage.ErrCustomerPhoneExists
+			return nil, storage.ErrCustomerPhoneExists
 		}
-		return fmt.Errorf("failed to create customer: %w", err)
+		return nil, fmt.Errorf("failed to create customer: %w", err)
 	}
 
 	tx.CustomerID = customer.ID
 	if err := insertTransaction(dbTx, tx); err != nil {
-		return fmt.Errorf("failed to create transaction: %w", err)
+		_ = dbTx.Rollback()
+		return nil, fmt.Errorf("failed to create transaction: %w", err)
 	}
 
-	if err := dbTx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
-	}
-
-	return nil
+	// Ne pas commit ici, laisser le handler décider
+	return dbTx, nil
 }
 
 // CreateTransactionForExistingCustomerPhone associe une transaction à un client existant sans le modifier.
-func (r *transactionRepository) CreateTransactionForExistingCustomerPhone(tx *entity.Transaction, phone string) (*customerentity.Customer, error) {
+// Elle retourne la transaction SQL non commitée pour permettre au handler de décider du commit/rollback après l'analyse AML.
+func (r *TransactionRepository) CreateTransactionForExistingCustomerPhone(tx *entity.Transaction, phone string) (*sql.Tx, *customerentity.Customer, error) {
 	normalizedPhone, err := storage.NormalizePhone(phone)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	dbTx, err := r.store.DB().Begin()
 	if err != nil {
-		return nil, fmt.Errorf("failed to begin transaction: %w", err)
+		return nil, nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
-	defer rollbackUnlessCommitted(dbTx)
 
 	customer, err := selectCustomerByPhone(dbTx, normalizedPhone, true)
 	if err != nil {
+		_ = dbTx.Rollback()
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, storage.ErrCustomerNotFound
+			return nil, nil, storage.ErrCustomerNotFound
 		}
-		return nil, fmt.Errorf("failed to get customer by phone: %w", err)
+		return nil, nil, fmt.Errorf("failed to get customer by phone: %w", err)
 	}
 
 	tx.CustomerID = customer.ID
 	if err := insertTransaction(dbTx, tx); err != nil {
-		return nil, fmt.Errorf("failed to create transaction: %w", err)
+		_ = dbTx.Rollback()
+		return nil, nil, fmt.Errorf("failed to create transaction: %w", err)
 	}
 
-	if err := dbTx.Commit(); err != nil {
-		return nil, fmt.Errorf("failed to commit transaction: %w", err)
-	}
-
-	return customer, nil
+	// Ne pas commit ici, laisser le handler décider
+	return dbTx, customer, nil
 }
 
 // UpdateTransaction met à jour une transaction existante dans la base de données.
-func (r *transactionRepository) UpdateTransaction(tx *entity.Transaction) error {
+func (r *TransactionRepository) UpdateTransaction(tx *entity.Transaction) error {
+	return r.UpdateTransactionWithTx(nil, tx)
+}
+
+// UpdateTransactionWithTx met à jour une transaction existante avec une transaction SQL.
+func (r *TransactionRepository) UpdateTransactionWithTx(tx *sql.Tx, txToUpdate *entity.Transaction) error {
 	query := `
 		UPDATE transactions SET
 			amount = $1, currency = $2, target_currency = $3, type = $4,
@@ -152,23 +162,31 @@ func (r *transactionRepository) UpdateTransaction(tx *entity.Transaction) error 
 			status = $9, trader_id = $10, customer_id = $11, updated_at = $12
 		WHERE id = $13`
 
-	tx.UpdatedAt = time.Now()
+	txToUpdate.UpdatedAt = time.Now()
 
-	_, err := r.store.DB().Exec(query,
-		tx.Amount,
-		tx.Currency,
-		tx.TargetCurrency,
-		tx.Type,
-		tx.Rate,
-		tx.ConvertedAmount,
-		tx.RiskLevel,
-		tx.RiskScore,
-		tx.Status,
-		tx.TraderID,
-		tx.CustomerID,
-		tx.UpdatedAt,
-		tx.ID,
-	)
+	var err error
+	if tx != nil {
+		_, err = tx.Exec(query, txToUpdate.Amount, txToUpdate.Currency, txToUpdate.TargetCurrency, txToUpdate.Type, txToUpdate.Rate,
+			txToUpdate.ConvertedAmount,
+			txToUpdate.RiskLevel,
+			txToUpdate.RiskScore,
+			txToUpdate.Status,
+			txToUpdate.TraderID,
+			txToUpdate.CustomerID,
+			txToUpdate.UpdatedAt,
+			txToUpdate.ID,
+		)
+	} else {
+		_, err = r.store.DB().Exec(query, txToUpdate.Amount, txToUpdate.Currency, txToUpdate.TargetCurrency, txToUpdate.Type, txToUpdate.Rate, txToUpdate.ConvertedAmount,
+			txToUpdate.RiskLevel,
+			txToUpdate.RiskScore,
+			txToUpdate.Status,
+			txToUpdate.TraderID,
+			txToUpdate.CustomerID,
+			txToUpdate.UpdatedAt,
+			txToUpdate.ID,
+		) 
+	}
 
 	if err != nil {
 		return fmt.Errorf("failed to update transaction: %w", err)
@@ -177,7 +195,7 @@ func (r *transactionRepository) UpdateTransaction(tx *entity.Transaction) error 
 }
 
 // GetTransaction récupère une transaction par son ID.
-func (r *transactionRepository) GetTransaction(id int) (*entity.Transaction, error) {
+func (r *TransactionRepository) GetTransaction(id int) (*entity.Transaction, error) {
 	query := `
 		SELECT id, amount, currency, COALESCE(target_currency, ''),
 		       COALESCE(type, ''), COALESCE(rate, 0),
@@ -204,7 +222,7 @@ func (r *transactionRepository) GetTransaction(id int) (*entity.Transaction, err
 }
 
 // ListTransactions liste les transactions, avec filtres optionnels.
-func (r *transactionRepository) ListTransactions(filter storage.TransactionFilter) ([]*entity.Transaction, error) {
+func (r *TransactionRepository) ListTransactions(filter storage.TransactionFilter) ([]*entity.Transaction, error) {
 	query := `
 		SELECT id, amount, currency, COALESCE(target_currency, ''),
 		       COALESCE(type, ''), COALESCE(rate, 0),
@@ -272,15 +290,7 @@ func insertCustomer(q rowQuerier, customer *customerentity.Customer) error {
 	customer.CreatedAt = time.Now()
 	customer.UpdatedAt = time.Now()
 
-	return q.QueryRow(query,
-		customer.FullName,
-		customer.IDNumber,
-		customer.IDType,
-		customer.Phone,
-		customer.Address,
-		customer.CreatedAt,
-		customer.UpdatedAt,
-	).Scan(&customer.ID, &customer.CreatedAt, &customer.UpdatedAt)
+	return q.QueryRow(query, customer.FullName, customer.IDNumber, customer.IDType, customer.Phone, customer.Address, customer.CreatedAt, customer.UpdatedAt).Scan(&customer.ID, &customer.CreatedAt, &customer.UpdatedAt)
 }
 
 func insertTransaction(q rowQuerier, tx *entity.Transaction) error {
@@ -295,21 +305,7 @@ func insertTransaction(q rowQuerier, tx *entity.Transaction) error {
 	tx.CreatedAt = time.Now()
 	tx.UpdatedAt = time.Now()
 
-	return q.QueryRow(query,
-		tx.Amount,
-		tx.Currency,
-		tx.TargetCurrency,
-		tx.Type,
-		tx.Rate,
-		tx.ConvertedAmount,
-		tx.RiskLevel,
-		tx.RiskScore,
-		tx.Status,
-		tx.TraderID,
-		tx.CustomerID,
-		tx.CreatedAt,
-		tx.UpdatedAt,
-	).Scan(&tx.ID, &tx.CreatedAt, &tx.UpdatedAt)
+	return q.QueryRow(query, tx.Amount, tx.Currency, tx.TargetCurrency, tx.Type, tx.Rate, tx.ConvertedAmount, tx.RiskLevel, tx.RiskScore, tx.Status, tx.TraderID, tx.CustomerID, tx.CreatedAt, tx.UpdatedAt).Scan(&tx.ID, &tx.CreatedAt, &tx.UpdatedAt)
 }
 
 func selectCustomerByPhone(q rowQuerier, normalizedPhone string, lock bool) (*customerentity.Customer, error) {
@@ -324,28 +320,12 @@ func selectCustomerByPhone(q rowQuerier, normalizedPhone string, lock bool) (*cu
 	}
 
 	customer := &customerentity.Customer{}
-	err := q.QueryRow(query, normalizedPhone).Scan(
-		&customer.ID,
-		&customer.FullName,
-		&customer.IDNumber,
-		&customer.IDType,
-		&customer.Phone,
-		&customer.Address,
-		&customer.CreatedAt,
-		&customer.UpdatedAt,
-		&customer.DeletedAt,
-		&customer.RiskLevel,
-		&customer.RiskScore,
-	)
+	err := q.QueryRow(query, normalizedPhone).Scan(&customer.ID, &customer.FullName, &customer.IDNumber, &customer.IDType, &customer.Phone, &customer.Address, &customer.CreatedAt, &customer.UpdatedAt, &customer.DeletedAt, &customer.RiskLevel, &customer.RiskScore)
 	if err != nil {
 		return nil, err
 	}
 
 	return customer, nil
-}
-
-func rollbackUnlessCommitted(tx *sql.Tx) {
-	_ = tx.Rollback()
 }
 
 func isUniqueViolation(err error) bool {

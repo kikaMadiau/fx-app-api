@@ -1306,11 +1306,9 @@ GOCACHE=/private/tmp/fx-app-api-go-build go test ./...
 ## Limitations Actuelles
 
 - `POST /transactions` persiste la transaction avant l'analyse AML/KYC; une erreur d'analyse apres insertion n'est pas encore rollbackee dans une transaction SQL.
-- Les regles AML sont codees en dur, pas encore configurees en base ou fichier.
 - `RuleConfig.Enabled` existe mais n'est pas encore utilise pour desactiver une regle.
 - Pas encore de screening sanctions, PEP, listes noires ou adverse media.
 - Pas encore de workflow d'investigation complet pour les alertes (`OPEN`, `IN_REVIEW`, `RESOLVED`, `FALSE_POSITIVE`).
 - Pas encore de gestion documentaire KYC: documents, expiration, verification de piece, justificatif d'adresse.
 - Authentification JWT active, mais pas encore de RBAC par role.
-- Les erreurs de contraintes SQL sont encore renvoyees en `500`.
 - Les formats metier de `currency`, `status`, `type`, `role` ne sont pas encore normalises par enum stricte.

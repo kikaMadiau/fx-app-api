@@ -1,6 +1,7 @@
 package service
 
 import (
+	"database/sql"
 	"fmt"
 	"fx-app-api/internal/domain/customer/entity"
 	"testing"
@@ -20,6 +21,10 @@ func (s *fakeCustomerStorage) CreateCustomer(customer *entity.Customer) error {
 }
 
 func (s *fakeCustomerStorage) UpdateCustomer(customer *entity.Customer) error {
+	return s.UpdateCustomerWithTx(nil, customer)
+}
+
+func (s *fakeCustomerStorage) UpdateCustomerWithTx(tx *sql.Tx, customer *entity.Customer) error {
 	if _, ok := s.customers[customer.ID]; !ok {
 		return fmt.Errorf("customer with ID %d not found", customer.ID)
 	}

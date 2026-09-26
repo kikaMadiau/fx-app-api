@@ -9,18 +9,23 @@ import (
 	"time"
 )
 
-// riskFlagRepository est l'implémentation concrète de storage.RiskFlagStorage.
-type riskFlagRepository struct {
+// RiskFlagRepository est l'implémentation concrète de storage.RiskFlagStorage.
+type RiskFlagRepository struct {
 	store *storage.PostgresStore
 }
 
 // NewRiskFlagRepository crée une nouvelle instance qui implémente storage.RiskFlagStorage.
 func NewRiskFlagRepository(store *storage.PostgresStore) storage.RiskFlagStorage {
-	return &riskFlagRepository{store: store}
+	return &RiskFlagRepository{store: store}
+}
+
+// Store retourne la store PostgreSQL sous-jacente.
+func (r *RiskFlagRepository) Store() *storage.PostgresStore {
+	return r.store
 }
 
 // Init crée la table 'risk_flags' si elle n'existe pas.
-func (r *riskFlagRepository) Init() error {
+func (r *RiskFlagRepository) Init() error {
 	createTableSQL := `
 		CREATE TABLE IF NOT EXISTS risk_flags (
 			id SERIAL PRIMARY KEY,
@@ -41,7 +46,12 @@ func (r *riskFlagRepository) Init() error {
 }
 
 // CreateRiskFlag insère un nouvel indicateur de risque dans la base de données.
-func (r *riskFlagRepository) CreateRiskFlag(flag *entity.RiskFlag) error {
+func (r *RiskFlagRepository) CreateRiskFlag(flag *entity.RiskFlag) error {
+	return r.CreateRiskFlagWithTx(nil, flag)
+}
+
+// CreateRiskFlagWithTx insère un nouvel indicateur de risque dans la base de données avec une transaction SQL.
+func (r *RiskFlagRepository) CreateRiskFlagWithTx(tx *sql.Tx, flag *entity.RiskFlag) error {
 	query := `
 		INSERT INTO risk_flags (
 			flag, reason, score, level, transaction_id, trader_id, customer_id, created_at, updated_at
@@ -52,17 +62,32 @@ func (r *riskFlagRepository) CreateRiskFlag(flag *entity.RiskFlag) error {
 	flag.CreatedAt = time.Now()
 	flag.UpdatedAt = time.Now()
 
-	err := r.store.DB().QueryRow(query,
-		flag.Flag,
-		flag.Reason,
-		flag.Score,
-		flag.Level,
-		flag.TransactionId,
-		flag.TraderId,
-		flag.CustomerId,
-		flag.CreatedAt,
-		flag.UpdatedAt,
-	).Scan(&flag.ID, &flag.CreatedAt, &flag.UpdatedAt)
+	var err error
+	if tx != nil {
+		err = tx.QueryRow(query,
+			flag.Flag,
+			flag.Reason,
+			flag.Score,
+			flag.Level,
+			flag.TransactionId,
+			flag.TraderId,
+			flag.CustomerId,
+			flag.CreatedAt,
+			flag.UpdatedAt,
+		).Scan(&flag.ID, &flag.CreatedAt, &flag.UpdatedAt)
+	} else {
+		err = r.store.DB().QueryRow(query,
+			flag.Flag,
+			flag.Reason,
+			flag.Score,
+			flag.Level,
+			flag.TransactionId,
+			flag.TraderId,
+			flag.CustomerId,
+			flag.CreatedAt,
+			flag.UpdatedAt,
+		).Scan(&flag.ID, &flag.CreatedAt, &flag.UpdatedAt)
+	}
 
 	if err != nil {
 		return fmt.Errorf("failed to create risk flag: %w", err)
@@ -72,7 +97,7 @@ func (r *riskFlagRepository) CreateRiskFlag(flag *entity.RiskFlag) error {
 }
 
 // GetRiskFlag récupère un indicateur de risque par son ID.
-func (r *riskFlagRepository) GetRiskFlag(id int) (*entity.RiskFlag, error) {
+func (r *RiskFlagRepository) GetRiskFlag(id int) (*entity.RiskFlag, error) {
 	query := `
 		SELECT id, flag, COALESCE(reason, ''), COALESCE(score, 0), COALESCE(level, ''),
 		       transaction_id, COALESCE(trader_id, 0), COALESCE(customer_id, 0),
@@ -105,7 +130,7 @@ func (r *riskFlagRepository) GetRiskFlag(id int) (*entity.RiskFlag, error) {
 }
 
 // ListRiskFlags liste les indicateurs de risque, avec filtres optionnels.
-func (r *riskFlagRepository) ListRiskFlags(filter storage.RiskFlagFilter) ([]*entity.RiskFlag, error) {
+func (r *RiskFlagRepository) ListRiskFlags(filter storage.RiskFlagFilter) ([]*entity.RiskFlag, error) {
 	query := `
 		SELECT id, flag, COALESCE(reason, ''), COALESCE(score, 0), COALESCE(level, ''),
 		       transaction_id, COALESCE(trader_id, 0), COALESCE(customer_id, 0),
@@ -166,7 +191,7 @@ func (r *riskFlagRepository) ListRiskFlags(filter storage.RiskFlagFilter) ([]*en
 }
 
 // DeleteRiskFlag effectue une suppression logique d'un indicateur de risque.
-func (r *riskFlagRepository) DeleteRiskFlag(id int) error {
+func (r *RiskFlagRepository) DeleteRiskFlag(id int) error {
 	query := `UPDATE risk_flags SET deleted_at = $1, updated_at = $1 WHERE id = $2 AND deleted_at IS NULL`
 
 	result, err := r.store.DB().Exec(query, time.Now(), id)
