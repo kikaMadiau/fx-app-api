@@ -47,6 +47,7 @@ func (s *ApiServer) Start() error {
 
 		r.Post("/customers", MakeHttpHandleFunc(h.HandleCreateCustomer))
 		r.Post("/customers/kyc", MakeHttpHandleFunc(h.HandleCreateCustomerWithKYC))
+		r.Get("/customers/search", MakeHttpHandleFunc(h.HandleSearchCustomerByPhone))
 		r.Get("/customers/{id}", MakeHttpHandleFunc(h.HandleGetCustomer))
 		r.Put("/customers/{id}", MakeHttpHandleFunc(h.HandleUpdateCustomer))
 		r.Get("/customers/{id}/kyc", MakeHttpHandleFunc(h.HandleGetKYCProfile))

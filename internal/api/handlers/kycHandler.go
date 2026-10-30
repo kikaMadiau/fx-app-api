@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"fmt"
 	customerservice "fx-app-api/internal/domain/customer/service"
 	"net/http"
 )
@@ -14,7 +13,7 @@ func (h *Handler) HandleGetKYCProfile(w http.ResponseWriter, r *http.Request) er
 
 	profile, err := h.customerService.GetKYCProfile(id)
 	if err != nil {
-		return notFound(err.Error())
+		return customerWriteError(err, "get KYC profile")
 	}
 
 	return WriteJson(w, http.StatusOK, profile)
@@ -33,7 +32,7 @@ func (h *Handler) HandleUpdateKYCProfile(w http.ResponseWriter, r *http.Request)
 
 	updatedProfile, err := h.customerService.UpdateKYCProfile(id, &profile)
 	if err != nil {
-		return fmt.Errorf("failed to update KYC profile: %w", err)
+		return customerWriteError(err, "update KYC profile")
 	}
 
 	return WriteJson(w, http.StatusOK, updatedProfile)
@@ -47,7 +46,7 @@ func (h *Handler) HandleTriggerKYCReassessment(w http.ResponseWriter, r *http.Re
 
 	customer, err := h.customerService.TriggerRiskReassessment(id)
 	if err != nil {
-		return fmt.Errorf("failed to trigger KYC risk reassessment: %w", err)
+		return customerWriteError(err, "trigger KYC risk reassessment")
 	}
 
 	return WriteJson(w, http.StatusOK, customer)

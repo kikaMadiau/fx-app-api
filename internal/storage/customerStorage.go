@@ -5,11 +5,25 @@ import (
 	"fx-app-api/internal/domain/customer/entity"
 )
 
+// CustomerFilter décrit les critères de recherche et de pagination de la liste des clients.
+type CustomerFilter struct {
+	Query     string // recherche partielle sur le nom, le téléphone et le numéro de pièce
+	KYCStatus string // statut KYC exact (UNVERIFIED, VERIFIED, ...)
+	RiskLevel string // niveau de risque exact (LOW, MEDIUM, HIGH, CRITICAL)
+	Limit     int
+	Offset    int
+}
+
 type CustomerStorage interface {
 	Init() error
+	// BeginTx ouvre une transaction SQL pour regrouper plusieurs écritures.
+	BeginTx() (*sql.Tx, error)
 	CreateCustomer(customer *entity.Customer) error
+	CreateCustomerWithTx(tx *sql.Tx, customer *entity.Customer) error
 	UpdateCustomer(customer *entity.Customer) error
 	UpdateCustomerWithTx(tx *sql.Tx, customer *entity.Customer) error
 	GetCustomer(id int) (*entity.Customer, error)
 	GetCustomerByPhone(phone string) (*entity.Customer, error)
+	// ListCustomers renvoie une page de clients actifs et le nombre total de résultats.
+	ListCustomers(filter CustomerFilter) ([]*entity.CustomerSummary, int, error)
 }

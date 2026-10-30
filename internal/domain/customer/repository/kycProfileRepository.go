@@ -2,6 +2,7 @@ package repository
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	customerservice "fx-app-api/internal/domain/customer/service"
 	"fx-app-api/internal/storage"
@@ -40,12 +41,24 @@ func (r *kycProfileRepository) Init() error {
 			updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 		);`
 
-	_, err := r.store.DB().Exec(createTableSQL)
+	if _, err := r.store.DB().Exec(createTableSQL); err != nil {
+		return err
+	}
+
+	// Accélère le filtre par statut KYC de la liste des clients.
+	_, err := r.store.DB().Exec(`
+		CREATE INDEX IF NOT EXISTS customer_kyc_profiles_status_idx
+		ON customer_kyc_profiles (kyc_status);`)
 	return err
 }
 
 // CreateKYCProfile insère un nouveau profil KYC.
 func (r *kycProfileRepository) CreateKYCProfile(profile *customerservice.CustomerKYCProfile) error {
+	return r.CreateKYCProfileWithTx(nil, profile)
+}
+
+// CreateKYCProfileWithTx insère un nouveau profil KYC, dans la transaction fournie si elle n'est pas nil.
+func (r *kycProfileRepository) CreateKYCProfileWithTx(tx *sql.Tx, profile *customerservice.CustomerKYCProfile) error {
 	query := `
 		INSERT INTO customer_kyc_profiles (
 			customer_id, legal_nature, activity_profile, kyc_status, profession, employer,
@@ -59,7 +72,7 @@ func (r *kycProfileRepository) CreateKYCProfile(profile *customerservice.Custome
 	profile.CreatedAt = now
 	profile.UpdatedAt = now
 
-	err := r.store.DB().QueryRow(query,
+	err := pickExecutor(r.store.DB(), tx).QueryRow(query,
 		profile.CustomerID,
 		profile.LegalNature,
 		profile.ActivityProfile,
@@ -123,8 +136,8 @@ func (r *kycProfileRepository) GetKYCProfileByCustomerID(customerID int) (*custo
 	)
 
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("KYC profile for customer %d not found", customerID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("%w: customer %d", customerservice.ErrKYCProfileNotFound, customerID)
 		}
 		return nil, fmt.Errorf("failed to get KYC profile: %w", err)
 	}
@@ -182,7 +195,7 @@ func (r *kycProfileRepository) UpdateKYCProfile(profile *customerservice.Custome
 		return fmt.Errorf("failed to check KYC profile update result: %w", err)
 	}
 	if rowsAffected == 0 {
-		return fmt.Errorf("KYC profile %d for customer %d not found", profile.ID, profile.CustomerID)
+		return fmt.Errorf("%w: profile %d for customer %d", customerservice.ErrKYCProfileNotFound, profile.ID, profile.CustomerID)
 	}
 
 	return nil
