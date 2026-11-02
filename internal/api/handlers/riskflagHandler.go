@@ -1,12 +1,15 @@
 package handlers
 
 import (
+	"errors"
 	"fmt"
 	riskflagentity "fx-app-api/internal/domain/riskflag/entity"
-	"fx-app-api/internal/storage"
 	traderservices "fx-app-api/internal/domain/trader/traderservices"
+	"fx-app-api/internal/storage"
 	"net/http"
+	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 type CreateRiskFlagRequest struct {
@@ -14,15 +17,15 @@ type CreateRiskFlagRequest struct {
 	Reason        string  `json:"reason"`
 	Score         float64 `json:"score"`
 	Level         string  `json:"level"`
-	TransactionID int     `json:"transaction_id"`
+	TransactionID *int    `json:"transaction_id"`
 	TraderID      int     `json:"trader_id"`
 	CustomerID    int     `json:"customer_id"`
 }
 
 type TransitionRiskFlagRequest struct {
-	Status         string  `json:"status"`
-	AssignedTo     *int    `json:"assigned_to,omitempty"`
-	ResolutionNote string  `json:"resolution_note,omitempty"`
+	Status         string `json:"status"`
+	AssignedTo     *int   `json:"assigned_to,omitempty"`
+	ResolutionNote string `json:"resolution_note,omitempty"`
 }
 
 func riskFlagFilterFromQuery(r *http.Request) (storage.RiskFlagFilter, error) {
@@ -42,11 +45,54 @@ func riskFlagFilterFromQuery(r *http.Request) (storage.RiskFlagFilter, error) {
 	if filter.Status, err = optionalString(query.Get("status"), "status"); err != nil {
 		return filter, err
 	}
+	if filter.Level, err = optionalString(query.Get("level"), "level"); err != nil {
+		return filter, err
+	}
+	if filter.Status != "" && !riskflagentity.IsValidRiskFlagStatus(filter.Status) {
+		return filter, badRequest("invalid status", nil)
+	}
+	if filter.Level != "" && !contains([]string{"LOW", "MEDIUM", "HIGH", "CRITICAL"}, strings.ToUpper(filter.Level)) {
+		return filter, badRequest("invalid level", nil)
+	}
+	filter.Level = strings.ToUpper(filter.Level)
+	filter.Query = strings.TrimSpace(query.Get("q"))
+	if raw := query.Get("limit"); raw != "" {
+		n, parseErr := strconv.Atoi(raw)
+		if parseErr != nil || n <= 0 {
+			return filter, badRequest("limit must be a positive integer", parseErr)
+		}
+		filter.Limit = n
+	}
+	if raw := query.Get("offset"); raw != "" {
+		n, parseErr := strconv.Atoi(raw)
+		if parseErr != nil || n < 0 {
+			return filter, badRequest("offset must be a non-negative integer", parseErr)
+		}
+		filter.Offset = n
+	}
 	if filter.AssignedTo, err = optionalPositiveInt(query.Get("assigned_to"), "assigned_to"); err != nil {
 		return filter, err
 	}
 
 	return filter, nil
+}
+
+func contains(values []string, value string) bool {
+	for _, candidate := range values {
+		if candidate == value {
+			return true
+		}
+	}
+	return false
+}
+func boundedLimit(value, fallback, maximum int) int {
+	if value <= 0 {
+		return fallback
+	}
+	if value > maximum {
+		return maximum
+	}
+	return value
 }
 
 func optionalString(rawValue, fieldName string) (string, error) {
@@ -64,17 +110,46 @@ func (h *Handler) HandleCreateRiskFlag(w http.ResponseWriter, r *http.Request) e
 	if strings.TrimSpace(req.Flag) == "" {
 		return badRequest("flag is required", nil)
 	}
-	if req.TransactionID <= 0 {
-		return badRequest("transaction_id is required", nil)
+	level := strings.ToUpper(strings.TrimSpace(req.Level))
+	if !contains([]string{"LOW", "MEDIUM", "HIGH", "CRITICAL"}, level) {
+		return badRequest("level must be LOW, MEDIUM, HIGH or CRITICAL", nil)
+	}
+	if req.CustomerID <= 0 {
+		return badRequest("customer_id is required", nil)
+	}
+	if utf8.RuneCountInString(strings.TrimSpace(req.Flag)) > 255 {
+		return badRequest("flag must be at most 255 characters", nil)
+	}
+	user := traderservices.GetUser(r)
+	if user == nil {
+		return &HTTPError{StatusCode: http.StatusUnauthorized, Message: "unauthenticated"}
+	}
+	if _, err := h.customerStore.GetCustomer(req.CustomerID); err != nil {
+		if errors.Is(err, storage.ErrCustomerIDNotFound) {
+			return notFound("customer not found")
+		}
+		return fmt.Errorf("failed to check customer: %w", err)
+	}
+	if req.TransactionID != nil {
+		tx, err := h.transactionStore.GetTransaction(*req.TransactionID)
+		if err != nil {
+			if errors.Is(err, storage.ErrTransactionNotFound) {
+				return badRequest("transaction_id does not belong to customer", err)
+			}
+			return fmt.Errorf("failed to check transaction: %w", err)
+		}
+		if tx.CustomerID != req.CustomerID {
+			return badRequest("transaction_id does not belong to customer", nil)
+		}
 	}
 
 	flag := &riskflagentity.RiskFlag{
 		Flag:          strings.TrimSpace(req.Flag),
 		Reason:        req.Reason,
 		Score:         req.Score,
-		Level:         strings.ToUpper(strings.TrimSpace(req.Level)),
+		Level:         level,
 		TransactionId: req.TransactionID,
-		TraderId:      req.TraderID,
+		TraderId:      user.Id,
 		CustomerId:    req.CustomerID,
 	}
 
@@ -91,12 +166,17 @@ func (h *Handler) HandleListRiskFlags(w http.ResponseWriter, r *http.Request) er
 		return err
 	}
 
-	flags, err := h.riskFlagStore.ListRiskFlags(filter)
+	filter.Limit = boundedLimit(filter.Limit, 20, 100)
+	flags, total, err := h.riskFlagStore.ListRiskFlagsWithDetails(filter)
 	if err != nil {
 		return fmt.Errorf("failed to list risk flags: %w", err)
 	}
-
-	return WriteJson(w, http.StatusOK, flags)
+	return WriteJson(w, http.StatusOK, struct {
+		Items  any `json:"items"`
+		Total  int `json:"total"`
+		Limit  int `json:"limit"`
+		Offset int `json:"offset"`
+	}{flags, total, filter.Limit, filter.Offset})
 }
 
 func (h *Handler) HandleGetRiskFlag(w http.ResponseWriter, r *http.Request) error {
@@ -107,7 +187,10 @@ func (h *Handler) HandleGetRiskFlag(w http.ResponseWriter, r *http.Request) erro
 
 	flag, err := h.riskFlagStore.GetRiskFlag(id)
 	if err != nil {
-		return notFound(err.Error())
+		if errors.Is(err, storage.ErrRiskFlagNotFound) {
+			return notFound("risk flag not found")
+		}
+		return fmt.Errorf("failed to get risk flag: %w", err)
 	}
 
 	return WriteJson(w, http.StatusOK, flag)
@@ -119,8 +202,21 @@ func (h *Handler) HandleDeleteRiskFlag(w http.ResponseWriter, r *http.Request) e
 		return badRequest("invalid risk flag id", err)
 	}
 
+	before, err := h.riskFlagStore.GetRiskFlag(id)
+	if err != nil {
+		if errors.Is(err, storage.ErrRiskFlagNotFound) {
+			return notFound("risk flag not found")
+		}
+		return fmt.Errorf("failed to get risk flag: %w", err)
+	}
 	if err := h.riskFlagStore.DeleteRiskFlag(id); err != nil {
-		return notFound(err.Error())
+		if errors.Is(err, storage.ErrRiskFlagNotFound) {
+			return notFound("risk flag not found")
+		}
+		return fmt.Errorf("failed to delete risk flag: %w", err)
+	}
+	if err := h.recordAudit(r, "risk_flag.delete", "risk_flag", id, before, map[string]bool{"deleted": true}); err != nil {
+		return fmt.Errorf("failed to audit risk flag deletion: %w", err)
 	}
 
 	w.WriteHeader(http.StatusNoContent)
@@ -150,7 +246,26 @@ func (h *Handler) HandleTransitionRiskFlagStatus(w http.ResponseWriter, r *http.
 
 	// Récupérer le trader_id de l'utilisateur
 	traderID := user.Id
-
+	var beforeFlag *riskflagentity.RiskFlag
+	if req.Status == string(riskflagentity.RiskFlagStatusResolved) || req.Status == string(riskflagentity.RiskFlagStatusFalsePositive) {
+		flag, err := h.riskFlagStore.GetRiskFlag(id)
+		if err != nil {
+			if errors.Is(err, storage.ErrRiskFlagNotFound) {
+				return notFound("risk flag not found")
+			}
+			return fmt.Errorf("failed to get risk flag: %w", err)
+		}
+		beforeFlag = flag
+		if flag.TransactionId != nil {
+			transaction, err := h.transactionStore.GetTransaction(*flag.TransactionId)
+			if err != nil {
+				return fmt.Errorf("failed to get related transaction: %w", err)
+			}
+			if transaction.TraderID == traderID {
+				return &HTTPError{StatusCode: http.StatusForbidden, Message: "the transaction creator cannot close its risk flag"}
+			}
+		}
+	}
 	// Valider la transition
 	note := req.ResolutionNote
 	if req.Status == string(riskflagentity.RiskFlagStatusResolved) || req.Status == string(riskflagentity.RiskFlagStatusFalsePositive) {
@@ -162,10 +277,24 @@ func (h *Handler) HandleTransitionRiskFlagStatus(w http.ResponseWriter, r *http.
 	// Effectuer la transition
 	updatedFlag, err := h.riskService.Investigation.TransitionRiskFlag(id, req.Status, traderID, note, req.AssignedTo)
 	if err != nil {
-		if strings.Contains(err.Error(), "cannot transition") {
-			return &HTTPError{StatusCode: http.StatusConflict, Message: err.Error()}
+		if errors.Is(err, storage.ErrRiskFlagNotFound) {
+			return notFound("risk flag not found")
 		}
-		return &HTTPError{StatusCode: http.StatusBadRequest, Message: err.Error()}
+		if errors.Is(err, storage.ErrInvalidStatusTransition) {
+			return conflict(err.Error())
+		}
+		if errors.Is(err, storage.ErrResolutionNoteRequired) {
+			return badRequest(err.Error(), nil)
+		}
+		if errors.Is(err, storage.ErrAssignedToRequired) {
+			return badRequest(err.Error(), nil)
+		}
+		return fmt.Errorf("failed to transition risk flag: %w", err)
+	}
+	if beforeFlag != nil {
+		if err := h.recordAudit(r, "risk_flag.close", "risk_flag", id, beforeFlag, updatedFlag); err != nil {
+			return fmt.Errorf("failed to audit risk flag closure: %w", err)
+		}
 	}
 
 	return WriteJson(w, http.StatusOK, updatedFlag)
@@ -177,9 +306,15 @@ func (h *Handler) HandleGetRiskFlagHistory(w http.ResponseWriter, r *http.Reques
 		return badRequest("invalid risk flag id", err)
 	}
 
+	if _, err := h.riskFlagStore.GetRiskFlag(id); err != nil {
+		if errors.Is(err, storage.ErrRiskFlagNotFound) {
+			return notFound("risk flag not found")
+		}
+		return fmt.Errorf("failed to check risk flag: %w", err)
+	}
 	history, err := h.riskService.Investigation.GetStatusHistory(id)
 	if err != nil {
-		return notFound("failed to get status history")
+		return fmt.Errorf("failed to get status history: %w", err)
 	}
 
 	return WriteJson(w, http.StatusOK, history)

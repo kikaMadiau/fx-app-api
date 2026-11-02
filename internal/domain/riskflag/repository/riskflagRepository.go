@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+type RiskFlagWithDetails = storage.RiskFlagWithDetails
+
 // RiskFlagRepository est l'implémentation concrète de storage.RiskFlagStorage.
 type RiskFlagRepository struct {
 	store *storage.PostgresStore
@@ -62,6 +64,9 @@ func (r *RiskFlagRepository) Init() error {
 
 	_, err = r.store.DB().Exec(alterTableSQL)
 	if err != nil {
+		return err
+	}
+	if _, err := r.store.DB().Exec(`ALTER TABLE risk_flags ALTER COLUMN transaction_id DROP NOT NULL`); err != nil {
 		return err
 	}
 
@@ -169,7 +174,7 @@ func (r *RiskFlagRepository) GetRiskFlag(id int) (*entity.RiskFlag, error) {
 	)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("risk flag with ID %d not found", id)
+			return nil, fmt.Errorf("%w: id %d", storage.ErrRiskFlagNotFound, id)
 		}
 		return nil, fmt.Errorf("failed to get risk flag: %w", err)
 	}
@@ -253,6 +258,126 @@ func (r *RiskFlagRepository) ListRiskFlags(filter storage.RiskFlagFilter) ([]*en
 	return flags, nil
 }
 
+// ListRiskFlagsWithDetails liste les indicateurs de risque avec les détails du client et de la transaction.
+func (r *RiskFlagRepository) ListRiskFlagsWithDetails(filter storage.RiskFlagFilter) ([]*RiskFlagWithDetails, int, error) {
+	query := `
+		SELECT COUNT(*) OVER(), f.id, f.flag, COALESCE(f.reason, ''), COALESCE(f.score, 0), COALESCE(f.level, ''),
+		       f.transaction_id, COALESCE(f.trader_id, 0), COALESCE(f.customer_id, 0),
+		       COALESCE(f.status, ''), COALESCE(f.assigned_to, 0), COALESCE(f.resolution_note, ''),
+		       f.resolved_at, COALESCE(f.resolved_by, 0),
+		       f.created_at, f.updated_at, f.deleted_at,
+		       c.id, COALESCE(c.full_name, ''), COALESCE(c.phone, ''), COALESCE(k.kyc_status, 'UNVERIFIED'),
+		       t.id, t.type, t.currency, t.amount, t.rate, t.converted_amount, t.created_at
+		FROM risk_flags f
+		LEFT JOIN customers c ON c.id = f.customer_id
+		LEFT JOIN customer_kyc_profiles k ON k.customer_id = c.id
+		LEFT JOIN transactions t ON t.id = f.transaction_id
+		WHERE f.deleted_at IS NULL`
+
+	var args []any
+	var conditions []string
+	if filter.TransactionID > 0 {
+		args = append(args, filter.TransactionID)
+		conditions = append(conditions, fmt.Sprintf("f.transaction_id = $%d", len(args)))
+	}
+	if filter.TraderID > 0 {
+		args = append(args, filter.TraderID)
+		conditions = append(conditions, fmt.Sprintf("f.trader_id = $%d", len(args)))
+	}
+	if filter.CustomerID > 0 {
+		args = append(args, filter.CustomerID)
+		conditions = append(conditions, fmt.Sprintf("f.customer_id = $%d", len(args)))
+	}
+	if filter.Status != "" {
+		args = append(args, filter.Status)
+		conditions = append(conditions, fmt.Sprintf("f.status = $%d", len(args)))
+	}
+	if filter.Level != "" {
+		args = append(args, filter.Level)
+		conditions = append(conditions, fmt.Sprintf("f.level = $%d", len(args)))
+	}
+	if filter.Query != "" {
+		args = append(args, "%"+strings.NewReplacer(`\`, `\\`, "%", `\%`, "_", `\_`).Replace(filter.Query)+"%")
+		conditions = append(conditions, fmt.Sprintf("(c.full_name ILIKE $%d ESCAPE E'\\\\' OR c.phone ILIKE $%d ESCAPE E'\\\\')", len(args), len(args)))
+	}
+	if filter.AssignedTo > 0 {
+		args = append(args, filter.AssignedTo)
+		conditions = append(conditions, fmt.Sprintf("f.assigned_to = $%d", len(args)))
+	}
+	if len(conditions) > 0 {
+		query += " AND " + strings.Join(conditions, " AND ")
+	}
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	offset := filter.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	args = append(args, limit, offset)
+	query += fmt.Sprintf(" ORDER BY f.created_at DESC, f.id DESC LIMIT $%d OFFSET $%d", len(args)-1, len(args))
+
+	rows, err := r.store.DB().Query(query, args...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to list risk flags with details: %w", err)
+	}
+	defer rows.Close()
+
+	var flags []*RiskFlagWithDetails
+	var total int
+	for rows.Next() {
+		flag := &RiskFlagWithDetails{}
+		var customerID, transactionID sql.NullInt64
+		var fullName, phone, kycStatus sql.NullString
+		var transactionType, currency sql.NullString
+		var amount, rate, converted sql.NullFloat64
+		var transactionCreated sql.NullTime
+		if err := rows.Scan(
+			&total,
+			&flag.ID,
+			&flag.Flag,
+			&flag.Reason,
+			&flag.Score,
+			&flag.Level,
+			&flag.TransactionId,
+			&flag.TraderId,
+			&flag.CustomerId,
+			&flag.Status,
+			&flag.AssignedTo,
+			&flag.ResolutionNote,
+			&flag.ResolvedAt,
+			&flag.ResolvedBy,
+			&flag.CreatedAt,
+			&flag.UpdatedAt,
+			&flag.DeletedAt,
+			&customerID, &fullName, &phone, &kycStatus,
+			&transactionID, &transactionType, &currency, &amount, &rate, &converted, &transactionCreated,
+		); err != nil {
+			return nil, 0, fmt.Errorf("failed to scan risk flag with details: %w", err)
+		}
+		if customerID.Valid {
+			flag.Customer = &storage.RiskFlagCustomer{ID: int(customerID.Int64), FullName: fullName.String, Phone: phone.String, KYCStatus: kycStatus.String}
+		}
+		flag.CustomerName, flag.CustomerPhone = fullName.String, phone.String
+		if transactionID.Valid {
+			flag.Transaction = &storage.RiskFlagTransaction{ID: int(transactionID.Int64), Type: transactionType.String, Currency: currency.String, Amount: amount.Float64, Rate: rate.Float64, ConvertedAmount: converted.Float64}
+			if transactionCreated.Valid {
+				flag.Transaction.CreatedAt = transactionCreated.Time
+			}
+		}
+		flags = append(flags, flag)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("failed to iterate risk flags with details: %w", err)
+	}
+
+	return flags, total, nil
+}
+
 // DeleteRiskFlag effectue une suppression logique d'un indicateur de risque.
 func (r *RiskFlagRepository) DeleteRiskFlag(id int) error {
 	query := `UPDATE risk_flags SET deleted_at = $1, updated_at = $1 WHERE id = $2 AND deleted_at IS NULL`
@@ -267,7 +392,7 @@ func (r *RiskFlagRepository) DeleteRiskFlag(id int) error {
 		return fmt.Errorf("failed to check risk flag delete result: %w", err)
 	}
 	if rowsAffected == 0 {
-		return fmt.Errorf("risk flag with ID %d not found", id)
+		return fmt.Errorf("%w: id %d", storage.ErrRiskFlagNotFound, id)
 	}
 
 	return nil
@@ -275,6 +400,21 @@ func (r *RiskFlagRepository) DeleteRiskFlag(id int) error {
 
 // UpdateRiskFlagStatus met à jour le statut d'un risk_flag avec historique.
 func (r *RiskFlagRepository) UpdateRiskFlagStatus(tx *sql.Tx, flagID int, newStatus string, changedBy int, note string, assignedTo *int) (*entity.RiskFlag, error) {
+	if tx == nil {
+		createdTx, err := r.store.DB().Begin()
+		if err != nil {
+			return nil, fmt.Errorf("failed to begin risk flag transition: %w", err)
+		}
+		updated, err := r.UpdateRiskFlagStatus(createdTx, flagID, newStatus, changedBy, note, assignedTo)
+		if err != nil {
+			_ = createdTx.Rollback()
+			return nil, err
+		}
+		if err := createdTx.Commit(); err != nil {
+			return nil, fmt.Errorf("failed to commit risk flag transition: %w", err)
+		}
+		return updated, nil
+	}
 	// Récupérer le flag actuel
 	query := `SELECT id, status, assigned_to, resolution_note, resolved_at, resolved_by FROM risk_flags WHERE id = $1 AND deleted_at IS NULL`
 	var currentStatus string
@@ -286,26 +426,26 @@ func (r *RiskFlagRepository) UpdateRiskFlagStatus(tx *sql.Tx, flagID int, newSta
 	err := tx.QueryRow(query, flagID).Scan(&flagID, &currentStatus, &currentAssignedTo, &currentResolutionNote, &currentResolvedAt, &currentResolvedBy)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("risk flag with ID %d not found", flagID)
+			return nil, fmt.Errorf("%w: id %d", storage.ErrRiskFlagNotFound, flagID)
 		}
 		return nil, fmt.Errorf("failed to get risk flag: %w", err)
 	}
 
 	// Vérifier la transition autorisée
 	if !isValidStatusTransition(currentStatus, newStatus) {
-		return nil, fmt.Errorf("cannot transition from %s to %s", currentStatus, newStatus)
+		return nil, fmt.Errorf("%w: from %s to %s", storage.ErrInvalidStatusTransition, currentStatus, newStatus)
 	}
 
 	// Valider resolution_note pour RESOLVED et FALSE_POSITIVE
 	if (newStatus == string(entity.RiskFlagStatusResolved) || newStatus == string(entity.RiskFlagStatusFalsePositive)) && note == "" {
-		return nil, fmt.Errorf("resolution_note is required for %s status", newStatus)
+		return nil, fmt.Errorf("%w: %s", storage.ErrResolutionNoteRequired, newStatus)
 	}
 
 	// Valider assigned_to pour IN_REVIEW
 	if newStatus == string(entity.RiskFlagStatusInReview) {
 		if assignedTo == nil || *assignedTo == 0 {
 			if currentAssignedTo == nil || *currentAssignedTo == 0 {
-				return nil, fmt.Errorf("assigned_to is required for IN_REVIEW status")
+				return nil, storage.ErrAssignedToRequired
 			}
 			// Utiliser l'assigned_to existant
 			assignedTo = currentAssignedTo
@@ -338,10 +478,18 @@ func (r *RiskFlagRepository) UpdateRiskFlagStatus(tx *sql.Tx, flagID int, newSta
 		return nil, fmt.Errorf("failed to insert status history: %w", err)
 	}
 
-	// Récupérer le flag mis à jour
-	updatedFlag, err := r.GetRiskFlag(flagID)
+	// Lire la version mise à jour dans la même transaction.
+	query = `SELECT id, flag, COALESCE(reason, ''), COALESCE(score, 0), COALESCE(level, ''), transaction_id,
+		COALESCE(trader_id, 0), COALESCE(customer_id, 0), COALESCE(status, ''), assigned_to,
+		COALESCE(resolution_note, ''), resolved_at, resolved_by, created_at, updated_at, deleted_at
+		FROM risk_flags WHERE id = $1 AND deleted_at IS NULL`
+	updatedFlag := &entity.RiskFlag{}
+	err = tx.QueryRow(query, flagID).Scan(&updatedFlag.ID, &updatedFlag.Flag, &updatedFlag.Reason, &updatedFlag.Score,
+		&updatedFlag.Level, &updatedFlag.TransactionId, &updatedFlag.TraderId, &updatedFlag.CustomerId, &updatedFlag.Status,
+		&updatedFlag.AssignedTo, &updatedFlag.ResolutionNote, &updatedFlag.ResolvedAt, &updatedFlag.ResolvedBy,
+		&updatedFlag.CreatedAt, &updatedFlag.UpdatedAt, &updatedFlag.DeletedAt)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to read updated risk flag: %w", err)
 	}
 
 	return updatedFlag, nil

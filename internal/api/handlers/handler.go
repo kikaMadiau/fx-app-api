@@ -6,7 +6,7 @@ import (
 	"fmt"
 	customerentity "fx-app-api/internal/domain/customer/entity"
 	customerservice "fx-app-api/internal/domain/customer/service"
-	"fx-app-api/internal/domain/transaction/repository"
+	dashboardrepository "fx-app-api/internal/domain/dashboard/repository"
 	riskservice "fx-app-api/internal/domain/riskflag/service"
 	traderauthservice "fx-app-api/internal/domain/trader/traderservices"
 	"fx-app-api/internal/storage"
@@ -23,12 +23,35 @@ type Handler struct {
 	riskService      *riskservice.RiskService
 	customerService  *customerservice.CustomerService
 	authService      *traderauthservice.AuthService
+	dashboardRepo    *dashboardrepository.DashboardRepository
+	auditLogger      AuditLogger
+}
+
+type AuditLogger interface {
+	Record(actorID int, action, resourceType string, resourceID int, before, after any) error
+}
+
+func (h *Handler) SetAuditLogger(logger AuditLogger) { h.auditLogger = logger }
+
+func (h *Handler) recordAudit(r *http.Request, action, resourceType string, resourceID int, before, after any) error {
+	if h.auditLogger == nil {
+		return nil
+	}
+	user := traderauthservice.GetUser(r)
+	if user == nil {
+		return fmt.Errorf("authenticated user is unavailable for audit")
+	}
+	return h.auditLogger.Record(user.Id, action, resourceType, resourceID, before, after)
 }
 
 type HTTPError struct {
 	StatusCode int
 	Message    string
 	Err        error
+}
+
+func (h *Handler) SetDashboardRepository(repository *dashboardrepository.DashboardRepository) {
+	h.dashboardRepo = repository
 }
 
 func New(
@@ -62,6 +85,8 @@ func (e *HTTPError) HTTPStatusCode() int {
 	return e.StatusCode
 }
 
+func (e *HTTPError) PublicMessage() string { return e.Message }
+
 func WriteJson(w http.ResponseWriter, statusCode int, value any) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
@@ -69,6 +94,8 @@ func WriteJson(w http.ResponseWriter, statusCode int, value any) error {
 }
 
 func decodeJSON(r *http.Request, destination any) error {
+	const maxJSONBodyBytes = 1 << 20 // 1 MiB
+	r.Body = http.MaxBytesReader(nil, r.Body, maxJSONBodyBytes)
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	return decoder.Decode(destination)
@@ -120,5 +147,5 @@ func customerFromRequest(req UpsertCustomerRequest) *customerentity.Customer {
 
 // startTransaction démarre une nouvelle transaction SQL.
 func (h *Handler) startTransaction() (*sql.Tx, error) {
-	return h.transactionStore.(*repository.TransactionRepository).Store().DB().Begin()
+	return h.transactionStore.BeginTx()
 }

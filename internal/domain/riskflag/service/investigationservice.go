@@ -18,9 +18,9 @@ func NewInvestigationService(riskFlagRepo storage.RiskFlagStorage) *Investigatio
 
 // TransitionRequest représente la requête de transition de statut.
 type TransitionRequest struct {
-	Status         string  `json:"status"`
-	AssignedTo     *int    `json:"assigned_to,omitempty"`
-	ResolutionNote string  `json:"resolution_note,omitempty"`
+	Status         string `json:"status"`
+	AssignedTo     *int   `json:"assigned_to,omitempty"`
+	ResolutionNote string `json:"resolution_note,omitempty"`
 }
 
 // TransitionRiskFlag effectue une transition de statut avec validation et historique.

@@ -12,4 +12,5 @@ type TraderStorage interface {
 	FindOrCreateTrader(trader *entity.Trader) (*entity.Trader, error)
 	UpdateTrader(trader *entity.Trader) error
 	DeleteTrader(id int) error
+	CountActiveAdmins() (int, error)
 }

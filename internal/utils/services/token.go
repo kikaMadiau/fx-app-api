@@ -2,9 +2,12 @@ package services
 
 import (
 	"crypto/rsa"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -13,6 +16,8 @@ import (
 const (
 	defaultPrivateKeyPath = "jwt/private.pem"
 	defaultPublicKeyPath  = "jwt/public.pem"
+	envPrivateKey         = "JWT_PRIVATE_KEY"
+	envPublicKey          = "JWT_PUBLIC_KEY"
 )
 
 // Claims defines the structure of the data in the JWT.
@@ -24,32 +29,128 @@ type Claims struct {
 	jwt.RegisteredClaims
 }
 
+// loadKeys loads RSA keys from multiple sources in order of priority:
+// 1. Environment variables (JWT_PRIVATE_KEY, JWT_PUBLIC_KEY)
+// 2. Files specified by environment variables (JWT_PRIVATE_KEY_PATH, JWT_PUBLIC_KEY_PATH)
+// 3. Default file locations
 func loadKeys() (*rsa.PrivateKey, *rsa.PublicKey, error) {
-	privBytes, err := os.ReadFile(keyPath("JWT_PRIVATE_KEY_PATH", defaultPrivateKeyPath))
-	if err != nil {
-		return nil, nil, err
-	}
-	privKey, err := jwt.ParseRSAPrivateKeyFromPEM(privBytes)
-	if err != nil {
-		return nil, nil, err
+	// Try loading from environment variables first (base64 encoded)
+	if privKey, pubKey, err := loadKeysFromEnv(); err == nil {
+		return privKey, pubKey, nil
 	}
 
-	pubBytes, err := os.ReadFile(keyPath("JWT_PUBLIC_KEY_PATH", defaultPublicKeyPath))
-	if err != nil {
-		return nil, nil, err
+	// Try loading from file paths specified in environment variables
+	if privKey, pubKey, err := loadKeysFromFilePaths(); err == nil {
+		return privKey, pubKey, nil
 	}
+
+	// Finally, try default file locations
+	return loadKeysFromDefaultFiles()
+}
+
+func loadKeysFromEnv() (*rsa.PrivateKey, *rsa.PublicKey, error) {
+	// Check if keys are provided as base64 encoded strings in environment variables
+	privKeyB64 := strings.TrimSpace(os.Getenv(envPrivateKey))
+	pubKeyB64 := strings.TrimSpace(os.Getenv(envPublicKey))
+
+	if privKeyB64 == "" || pubKeyB64 == "" {
+		return nil, nil, fmt.Errorf("JWT keys not found in environment variables")
+	}
+
+	// Decode base64 strings
+	privBytes, err := base64.StdEncoding.DecodeString(privKeyB64)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to decode private key from base64: %w", err)
+	}
+
+	pubBytes, err := base64.StdEncoding.DecodeString(pubKeyB64)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to decode public key from base64: %w", err)
+	}
+
+	// Parse RSA keys
+	privKey, err := jwt.ParseRSAPrivateKeyFromPEM(privBytes)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to parse private key from PEM: %w", err)
+	}
+
 	pubKey, err := jwt.ParseRSAPublicKeyFromPEM(pubBytes)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("failed to parse public key from PEM: %w", err)
 	}
 
 	return privKey, pubKey, nil
 }
 
-func CreateToken(name string, email string, roles []string, status []string) (string, error) {
-	privKey, _, err := loadKeys()
+func loadKeysFromFilePaths() (*rsa.PrivateKey, *rsa.PublicKey, error) {
+	privPath := keyPath("JWT_PRIVATE_KEY_PATH", "")
+	pubPath := keyPath("JWT_PUBLIC_KEY_PATH", "")
+
+	if privPath == "" || pubPath == "" {
+		return nil, nil, fmt.Errorf("JWT key paths not specified in environment")
+	}
+
+	privBytes, err := os.ReadFile(privPath)
 	if err != nil {
-		return "", err
+		return nil, nil, fmt.Errorf("failed to read private key file %s: %w", privPath, err)
+	}
+	privKey, err := jwt.ParseRSAPrivateKeyFromPEM(privBytes)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to parse private key from file %s: %w", privPath, err)
+	}
+
+	pubBytes, err := os.ReadFile(pubPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to read public key file %s: %w", pubPath, err)
+	}
+	pubKey, err := jwt.ParseRSAPublicKeyFromPEM(pubBytes)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to parse public key from file %s: %w", pubPath, err)
+	}
+
+	return privKey, pubKey, nil
+}
+
+func loadKeysFromDefaultFiles() (*rsa.PrivateKey, *rsa.PublicKey, error) {
+	privBytes, err := os.ReadFile(defaultPrivateKeyPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to read default private key file %s: %w", defaultPrivateKeyPath, err)
+	}
+	privKey, err := jwt.ParseRSAPrivateKeyFromPEM(privBytes)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to parse private key from default file %s: %w", defaultPrivateKeyPath, err)
+	}
+
+	pubBytes, err := os.ReadFile(defaultPublicKeyPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to read default public key file %s: %w", defaultPublicKeyPath, err)
+	}
+	pubKey, err := jwt.ParseRSAPublicKeyFromPEM(pubBytes)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to parse public key from default file %s: %w", defaultPublicKeyPath, err)
+	}
+
+	return privKey, pubKey, nil
+}
+
+var (
+	keyManager     *KeyManager
+	keyManagerOnce sync.Once
+	keyManagerErr  error
+)
+
+// getKeyManager retourne le gestionnaire de clés singleton
+func getKeyManager() (*KeyManager, error) {
+	keyManagerOnce.Do(func() {
+		keyManager, keyManagerErr = NewKeyManager()
+	})
+	return keyManager, keyManagerErr
+}
+
+func CreateToken(name string, email string, roles []string, status []string) (string, error) {
+	km, err := getKeyManager()
+	if err != nil {
+		return "", fmt.Errorf("failed to get key manager: %w", err)
 	}
 
 	claims := &Claims{
@@ -62,53 +163,50 @@ func CreateToken(name string, email string, roles []string, status []string) (st
 		},
 	}
 
-	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
-	tokenString, err := token.SignedString(privKey)
-	if err != nil {
-		return "", err
-	}
-
-	return tokenString, nil
+	return km.CreateTokenWithRotation(claims)
 }
 
 func VerifyToken(tokenString string) error {
-	_, pubKey, err := loadKeys()
+	km, err := getKeyManager()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to get key manager: %w", err)
 	}
 
-	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-		if token.Method != jwt.SigningMethodRS256 {
-			return nil, fmt.Errorf("unexpected signing method: %s", token.Header["alg"])
-		}
-
-		return pubKey, nil
-	}, jwt.WithValidMethods([]string{jwt.SigningMethodRS256.Alg()}))
-
-	if err != nil {
-		return err
-	}
-
-	if !token.Valid {
-		return fmt.Errorf("invalid token")
-	}
-
-	return nil
+	return km.VerifyTokenWithRotation(tokenString)
 }
 
 func ParseToken(tokenString string) (*Claims, error) {
-	_, pubKey, err := loadKeys()
+	km, err := getKeyManager()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get key manager: %w", err)
 	}
 
+	km.mu.RLock()
+	currentPublicKey := km.currentPublicKey
+	previousPublicKey := km.previousPublicKey
+	km.mu.RUnlock()
+
 	claims := &Claims{}
-	token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
+	var token *jwt.Token
+
+	// Essayer d'abord avec la clé actuelle
+	token, err = jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
 		if token.Method != jwt.SigningMethodRS256 {
 			return nil, fmt.Errorf("unexpected signing method: %s", token.Header["alg"])
 		}
-		return pubKey, nil
+		return currentPublicKey, nil
 	}, jwt.WithValidMethods([]string{jwt.SigningMethodRS256.Alg()}))
+
+	// Si échec avec la clé actuelle, essayer avec la clé précédente
+	if (err != nil || !token.Valid) && previousPublicKey != nil {
+		claims = &Claims{}
+		token, err = jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
+			if token.Method != jwt.SigningMethodRS256 {
+				return nil, fmt.Errorf("unexpected signing method: %s", token.Header["alg"])
+			}
+			return previousPublicKey, nil
+		}, jwt.WithValidMethods([]string{jwt.SigningMethodRS256.Alg()}))
+	}
 
 	if err != nil {
 		return nil, err
@@ -123,8 +221,30 @@ func ParseToken(tokenString string) (*Claims, error) {
 
 func keyPath(envName, defaultPath string) string {
 	if path := os.Getenv(envName); path != "" {
-		return path
+		return filepath.Clean(path)
+	}
+
+	if defaultPath == "" {
+		return ""
 	}
 
 	return filepath.Clean(defaultPath)
+}
+
+// CheckJWTKeys verifies if JWT keys are properly configured and logs warnings
+func CheckJWTKeys() error {
+	_, _, err := loadKeys()
+	if err != nil {
+		return fmt.Errorf("JWT keys not properly configured: %w", err)
+	}
+
+	// Check if using default file locations (less secure)
+	if os.Getenv(envPrivateKey) == "" && os.Getenv(envPublicKey) == "" {
+		if os.Getenv("JWT_PRIVATE_KEY_PATH") == "" && os.Getenv("JWT_PUBLIC_KEY_PATH") == "" {
+			fmt.Println("⚠️  WARNING: Using default JWT key file locations. For production, use environment variables or secrets manager.")
+			fmt.Println("   Recommended: Set JWT_PRIVATE_KEY and JWT_PUBLIC_KEY environment variables (base64 encoded)")
+		}
+	}
+
+	return nil
 }

@@ -5,14 +5,23 @@ import (
 	"errors"
 	"fmt"
 	customerentity "fx-app-api/internal/domain/customer/entity"
+	traderentity "fx-app-api/internal/domain/trader/entity"
+	"fx-app-api/internal/domain/trader/permissions"
+	traderservices "fx-app-api/internal/domain/trader/traderservices"
 	transactionentity "fx-app-api/internal/domain/transaction/entity"
 	transactionservice "fx-app-api/internal/domain/transaction/service"
 	"fx-app-api/internal/storage"
 	"net/http"
+	"strconv"
 	"strings"
 )
 
 // --- Handlers de Transaction ---
+
+const (
+	defaultTransactionPageSize = 20
+	maxTransactionPageSize     = 100
+)
 
 type CreateTransactionRequest struct {
 	Amount         float64 `json:"amount"`
@@ -50,15 +59,27 @@ type CreateTransactionCustomerRequest struct {
 	Address   string `json:"address"`
 }
 
-func (h *Handler) HandleCreateTransaction(w http.ResponseWriter, r *http.Request) error {
+// TransactionListResponse est la page de résultats renvoyée par GET /transactions.
+type TransactionListResponse struct {
+	Items  []*transactionentity.TransactionListItem `json:"items"`
+	Total  int                                      `json:"total"`
+	Limit  int                                      `json:"limit"`
+	Offset int                                      `json:"offset"`
+}
 
+func (h *Handler) HandleCreateTransaction(w http.ResponseWriter, r *http.Request) error {
 	var payload CreateTransactionPayload
 	if err := decodeJSON(r, &payload); err != nil {
 		return badRequest("invalid request body", err)
 	}
 
+	trader := traderservices.GetUser(r)
+	if trader == nil {
+		return &HTTPError{StatusCode: http.StatusUnauthorized, Message: "authentication required"}
+	}
+
 	req := payload.transactionRequest()
-	if err := validateTransactionRequest(req); err != nil {
+	if err := validateTransactionRequest(&req, trader.Id); err != nil {
 		return err
 	}
 
@@ -69,8 +90,8 @@ func (h *Handler) HandleCreateTransaction(w http.ResponseWriter, r *http.Request
 
 	tx := &transactionentity.Transaction{
 		Amount:          req.Amount,
-		Currency:        strings.ToUpper(strings.TrimSpace(req.Currency)),
-		TargetCurrency:  strings.ToUpper(strings.TrimSpace(req.TargetCurrency)),
+		Currency:        req.Currency,
+		TargetCurrency:  req.TargetCurrency,
 		Type:            req.Type,
 		Rate:            req.Rate,
 		ConvertedAmount: convertedAmount,
@@ -92,12 +113,6 @@ func (h *Handler) HandleCreateTransaction(w http.ResponseWriter, r *http.Request
 			return err
 		}
 		dbTx, errCreate = h.transactionStore.CreateTransactionWithNewCustomer(tx, customer)
-		if errCreate != nil {
-			if errors.Is(errCreate, storage.ErrCustomerPhoneExists) {
-				return conflict("customer with this phone already exists")
-			}
-			return fmt.Errorf("failed to create transaction with new customer: %w", errCreate)
-		}
 	case strings.TrimSpace(payload.ClientPhone) != "":
 		if req.CustomerID > 0 {
 			return badRequest("provide either client_phone or customer_id, not both", nil)
@@ -106,37 +121,32 @@ func (h *Handler) HandleCreateTransaction(w http.ResponseWriter, r *http.Request
 			return badRequest("invalid client_phone", err)
 		}
 		dbTx, _, errCreate = h.transactionStore.CreateTransactionForExistingCustomerPhone(tx, payload.ClientPhone)
-		if errCreate != nil {
-			if errors.Is(errCreate, storage.ErrCustomerNotFound) {
-				return notFound("no customer found with this phone")
-			}
-			return fmt.Errorf("failed to create transaction for existing customer: %w", errCreate)
-		}
 	default:
 		if req.CustomerID <= 0 {
 			return badRequest("customer_id, client_phone, or client is required", nil)
 		}
-		// Commencer une transaction pour englober la création et l'analyse
+		// La transaction de change est insérée DANS la transaction SQL : si l'analyse AML échoue,
+		// le rollback l'annule aussi.
 		dbTx, errCreate = h.startTransaction()
-		if errCreate != nil {
-			return fmt.Errorf("failed to start transaction: %w", errCreate)
-		}
-		defer func() {
-			if dbTx != nil {
+		if errCreate == nil {
+			if errCreate = h.transactionStore.CreateTransactionWithTx(dbTx, tx); errCreate != nil {
 				_ = dbTx.Rollback()
+				dbTx = nil
 			}
-		}()
-		if errCreate = h.transactionStore.CreateTransaction(tx); errCreate != nil {
-			return fmt.Errorf("failed to create transaction: %w", errCreate)
 		}
+	}
+	if errCreate != nil {
+		return transactionWriteError(errCreate, "create transaction")
+	}
+
+	// Sans effet après un Commit réussi ; annule tout dans les autres cas (erreur, panic).
+	if dbTx != nil {
+		defer func() { _ = dbTx.Rollback() }()
 	}
 
 	// Analyse AML dans la même transaction SQL
+	// TODO: appliquer une éventuelle décision de mise en PENDING selon le niveau de risque.
 	if err := h.riskService.AnalyzeTransactionAndCustomerWithTx(dbTx, tx); err != nil {
-		// Rollback si l'analyse échoue
-		if dbTx != nil {
-			_ = dbTx.Rollback()
-		}
 		return fmt.Errorf("failed to analyze transaction risk: %w", err)
 	}
 
@@ -150,6 +160,29 @@ func (h *Handler) HandleCreateTransaction(w http.ResponseWriter, r *http.Request
 	return WriteJson(w, http.StatusCreated, tx)
 }
 
+// HandleListTransactions renvoie une page de transactions avec le client associé.
+//
+// Paramètres de requête (tous optionnels) : q, status, type, risk_level, customer_id, limit, offset.
+func (h *Handler) HandleListTransactions(w http.ResponseWriter, r *http.Request) error {
+	filter, err := transactionFilterFromQuery(r)
+	if err != nil {
+		return err
+	}
+	filter = scopeTransactionFilter(filter, traderservices.GetUser(r))
+
+	items, total, err := h.transactionStore.SearchTransactions(filter)
+	if err != nil {
+		return fmt.Errorf("failed to list transactions: %w", err)
+	}
+
+	return WriteJson(w, http.StatusOK, TransactionListResponse{
+		Items:  items,
+		Total:  total,
+		Limit:  filter.Limit,
+		Offset: filter.Offset,
+	})
+}
+
 func (h *Handler) HandleGetTransaction(w http.ResponseWriter, r *http.Request) error {
 	id, err := pathID(r)
 	if err != nil {
@@ -158,24 +191,146 @@ func (h *Handler) HandleGetTransaction(w http.ResponseWriter, r *http.Request) e
 
 	tx, err := h.transactionStore.GetTransaction(id)
 	if err != nil {
-		return notFound(err.Error())
+		return transactionWriteError(err, "get transaction")
+	}
+	if !canReadTransaction(tx, traderservices.GetUser(r)) {
+		return notFound("transaction not found")
 	}
 
 	return WriteJson(w, http.StatusOK, tx)
 }
 
-func validateTransactionRequest(req CreateTransactionRequest) error {
-	if strings.TrimSpace(req.Currency) == "" {
-		return badRequest("currency is required", nil)
+func scopeTransactionFilter(filter storage.TransactionFilter, user *traderentity.Trader) storage.TransactionFilter {
+	if user != nil && strings.EqualFold(user.Roles, string(permissions.Trader)) {
+		filter.TraderID = user.Id
 	}
-	if strings.TrimSpace(req.TargetCurrency) == "" {
-		return badRequest("target_currency is required", nil)
+	return filter
+}
+func canReadTransaction(tx *transactionentity.Transaction, user *traderentity.Trader) bool {
+	return tx != nil && (user == nil || !strings.EqualFold(user.Roles, string(permissions.Trader)) || tx.TraderID == user.Id)
+}
+
+// validateTransactionRequest nettoie et valide les champs de la transaction (devises, type, statut)
+// et rattache l'opération au trader authentifié : un trader ne peut pas enregistrer une opération
+// au nom d'un autre. Un trader_id absent vaut le trader connecté.
+func validateTransactionRequest(req *CreateTransactionRequest, authenticatedTraderID int) error {
+	currency, err := transactionentity.NormalizeCurrency("currency", req.Currency)
+	if err != nil {
+		return badRequest(err.Error(), nil)
 	}
-	if req.TraderID <= 0 {
-		return badRequest("trader_id is required", nil)
+	targetCurrency, err := transactionentity.NormalizeCurrency("target_currency", req.TargetCurrency)
+	if err != nil {
+		return badRequest(err.Error(), nil)
+	}
+	if currency == targetCurrency {
+		return badRequest("currency and target_currency must be different", nil)
 	}
 
+	transactionType, err := transactionentity.NormalizeType(req.Type)
+	if err != nil {
+		return badRequest(err.Error(), nil)
+	}
+	status, err := transactionentity.NormalizeStatus(req.Status)
+	if err != nil {
+		return badRequest(err.Error(), nil)
+	}
+
+	switch {
+	case req.TraderID == 0:
+		req.TraderID = authenticatedTraderID
+	case req.TraderID != authenticatedTraderID:
+		return &HTTPError{StatusCode: http.StatusForbidden, Message: "trader_id must match the authenticated trader"}
+	}
+
+	req.Currency = currency
+	req.TargetCurrency = targetCurrency
+	req.Type = transactionType
+	req.Status = status
+
 	return nil
+}
+
+// transactionFilterFromQuery lit et valide les paramètres de GET /transactions.
+func transactionFilterFromQuery(r *http.Request) (storage.TransactionFilter, error) {
+	query := r.URL.Query()
+	filter := storage.TransactionFilter{
+		Query: strings.TrimSpace(query.Get("q")),
+		Limit: defaultTransactionPageSize,
+	}
+
+	if len(filter.Query) > maxCustomerSearchLength {
+		return filter, badRequest(fmt.Sprintf("q must be at most %d characters", maxCustomerSearchLength), nil)
+	}
+
+	if raw := strings.TrimSpace(query.Get("status")); raw != "" {
+		status, err := transactionentity.NormalizeStatus(raw)
+		if err != nil {
+			return filter, badRequest(err.Error(), nil)
+		}
+		filter.Status = status
+	}
+
+	if raw := strings.TrimSpace(query.Get("type")); raw != "" {
+		transactionType, err := transactionentity.NormalizeType(raw)
+		if err != nil {
+			return filter, badRequest(err.Error(), nil)
+		}
+		filter.Type = transactionType
+	}
+
+	if raw := strings.ToUpper(strings.TrimSpace(query.Get("risk_level"))); raw != "" {
+		switch raw {
+		case "LOW", "MEDIUM", "HIGH", "CRITICAL":
+			filter.RiskLevel = raw
+		default:
+			return filter, badRequest("risk_level must be one of LOW, MEDIUM, HIGH, CRITICAL", nil)
+		}
+	}
+
+	customerID, err := optionalPositiveInt(query.Get("customer_id"), "customer_id")
+	if err != nil {
+		return filter, err
+	}
+	filter.CustomerID = customerID
+
+	if raw := strings.TrimSpace(query.Get("limit")); raw != "" {
+		limit, err := strconv.Atoi(raw)
+		if err != nil || limit <= 0 || limit > maxTransactionPageSize {
+			return filter, badRequest(fmt.Sprintf("limit must be an integer between 1 and %d", maxTransactionPageSize), err)
+		}
+		filter.Limit = limit
+	}
+
+	if raw := strings.TrimSpace(query.Get("offset")); raw != "" {
+		offset, err := strconv.Atoi(raw)
+		if err != nil || offset < 0 {
+			return filter, badRequest("offset must be a non-negative integer", err)
+		}
+		filter.Offset = offset
+	}
+
+	return filter, nil
+}
+
+// transactionWriteError traduit les erreurs métier du module transaction en erreurs HTTP
+// explicites (404, 409, 400). Toute autre erreur reste une 500.
+func transactionWriteError(err error, action string) error {
+	switch {
+	case errors.Is(err, storage.ErrCustomerPhoneExists):
+		return conflict("customer with this phone already exists")
+	case errors.Is(err, storage.ErrCustomerIDNumberExists):
+		return conflict("customer with this id_number already exists")
+	case errors.Is(err, storage.ErrCustomerNotFound):
+		return notFound("no customer found with this phone")
+	case errors.Is(err, storage.ErrCustomerIDNotFound):
+		return notFound("customer not found")
+	case errors.Is(err, storage.ErrTraderNotFound):
+		return badRequest("trader not found", nil)
+	case errors.Is(err, storage.ErrTransactionNotFound):
+		return notFound("transaction not found")
+	}
+
+	return fmt.Errorf("failed to %s: %w", action, err)
 }
 
 func customerFromTransactionRequest(req CreateTransactionCustomerRequest) (*customerentity.Customer, error) {
@@ -197,10 +352,15 @@ func customerFromTransactionRequest(req CreateTransactionCustomerRequest) (*cust
 		idNumber = normalizedPhone
 	}
 
+	idType, err := customerentity.NormalizeIDType(req.IDType)
+	if err != nil {
+		return nil, badRequest(err.Error(), nil)
+	}
+
 	return &customerentity.Customer{
 		FullName: fullName,
 		IDNumber: idNumber,
-		IDType:   req.IDType,
+		IDType:   idType,
 		Phone:    normalizedPhone,
 		Address:  req.Address,
 	}, nil

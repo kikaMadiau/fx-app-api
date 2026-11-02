@@ -99,6 +99,11 @@ func (r *kycProfileRepository) CreateKYCProfileWithTx(tx *sql.Tx, profile *custo
 
 // GetKYCProfileByCustomerID récupère le profil KYC d'un client.
 func (r *kycProfileRepository) GetKYCProfileByCustomerID(customerID int) (*customerservice.CustomerKYCProfile, error) {
+	return r.GetKYCProfileByCustomerIDWithTx(nil, customerID)
+}
+
+// GetKYCProfileByCustomerIDWithTx récupère le profil KYC d'un client, dans la transaction fournie si elle n'est pas nil.
+func (r *kycProfileRepository) GetKYCProfileByCustomerIDWithTx(tx *sql.Tx, customerID int) (*customerservice.CustomerKYCProfile, error) {
 	query := `
 		SELECT id, customer_id, legal_nature, activity_profile, kyc_status,
 			COALESCE(profession, ''),

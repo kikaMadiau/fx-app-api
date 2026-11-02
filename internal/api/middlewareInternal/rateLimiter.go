@@ -173,6 +173,33 @@ func (rl *RateLimiter) resetInfractions(ip string) {
 
 // RateLimit middleware.
 func (rl *RateLimiter) RateLimit(next http.Handler) http.Handler {
+	return rl.rateLimit(next, false)
+}
+
+// RateLimitFailedRequests additionally counts failed responses (for example, invalid login credentials).
+func (rl *RateLimiter) RateLimitFailedRequests(next http.Handler) http.Handler {
+	return rl.rateLimit(next, true)
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *statusRecorder) WriteHeader(code int) {
+	if w.status == 0 {
+		w.status = code
+	}
+	w.ResponseWriter.WriteHeader(code)
+}
+func (w *statusRecorder) Write(data []byte) (int, error) {
+	if w.status == 0 {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.ResponseWriter.Write(data)
+}
+
+func (rl *RateLimiter) rateLimit(next http.Handler, countFailedResponses bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 
@@ -240,7 +267,17 @@ func (rl *RateLimiter) RateLimit(next http.Handler) http.Handler {
 		// 3. Requête autorisée
 		// --------------------------------------------------
 
-		next.ServeHTTP(w, r)
+		if !countFailedResponses {
+			next.ServeHTTP(w, r)
+			return
+		}
+		recorder := &statusRecorder{ResponseWriter: w}
+		next.ServeHTTP(recorder, r)
+		if recorder.status == http.StatusUnauthorized || recorder.status == http.StatusForbidden {
+			rl.registerInfraction(ip)
+		} else if recorder.status >= 200 && recorder.status < 400 {
+			rl.resetInfractions(ip)
+		}
 	})
 }
 

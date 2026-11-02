@@ -346,3 +346,45 @@ func cloneKYCProfile(profile *CustomerKYCProfile) *CustomerKYCProfile {
 	copy := *profile
 	return &copy
 }
+
+func (s *fakeCustomerStorage) GetCustomerWithTx(tx *sql.Tx, id int) (*entity.Customer, error) {
+	return s.GetCustomer(id)
+}
+
+func (s *fakeKYCProfileStorage) GetKYCProfileByCustomerIDWithTx(tx *sql.Tx, customerID int) (*CustomerKYCProfile, error) {
+	return s.GetKYCProfileByCustomerID(customerID)
+}
+
+func TestUpdateKYCStatusChangesStatusAndVerificationTime(t *testing.T) {
+	customerStore := &fakeCustomerStorage{customers: map[int]*entity.Customer{1: {ID: 1, FullName: "KYC Subject", IDNumber: "ID-1"}}}
+	kycStore := &fakeKYCProfileStorage{profiles: map[int]*CustomerKYCProfile{1: {
+		ID: 10, CustomerID: 1, LegalNature: Individual, ActivityProfile: Personal,
+		KYCStatus: Unverified, SourceOfFunds: "Salary", PurposeOfOperations: "Travel",
+	}}}
+	service := NewCustomerServiceWithKYC(customerStore, kycStore)
+	updated, err := service.UpdateKYCStatus(1, Verified)
+	if err != nil {
+		t.Fatalf("UpdateKYCStatus returned error: %v", err)
+	}
+	if updated.KYCStatus != Verified {
+		t.Fatalf("status = %s", updated.KYCStatus)
+	}
+	if updated.LastVerificationDate.IsZero() {
+		t.Fatal("verification timestamp was not recorded")
+	}
+	persisted, err := kycStore.GetKYCProfileByCustomerID(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.KYCStatus != Verified {
+		t.Fatalf("persisted status = %s", persisted.KYCStatus)
+	}
+}
+
+func TestUpdateKYCStatusRejectsUnknownStatus(t *testing.T) {
+	service := NewCustomerServiceWithKYC(&fakeCustomerStorage{customers: map[int]*entity.Customer{}}, &fakeKYCProfileStorage{profiles: map[int]*CustomerKYCProfile{}})
+	_, err := service.UpdateKYCStatus(1, KYCStatus("SUPER_VERIFIED"))
+	if !errors.Is(err, ErrInvalidKYCProfile) {
+		t.Fatalf("error = %v, want ErrInvalidKYCProfile", err)
+	}
+}

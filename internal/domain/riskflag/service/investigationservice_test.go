@@ -16,6 +16,8 @@ type fakeRiskFlagStorage struct {
 	nextHistoryID int
 }
 
+func intPointer(value int) *int { return &value }
+
 func newFakeRiskFlagStorage() *fakeRiskFlagStorage {
 	return &fakeRiskFlagStorage{
 		flags:         make(map[int]*riskflagentity.RiskFlag),
@@ -61,6 +63,10 @@ func (f *fakeRiskFlagStorage) ListRiskFlags(filter storage.RiskFlagFilter) ([]*r
 	return result, nil
 }
 
+func (f *fakeRiskFlagStorage) ListRiskFlagsWithDetails(filter storage.RiskFlagFilter) ([]*storage.RiskFlagWithDetails, int, error) {
+	return nil, 0, nil
+}
+
 func (f *fakeRiskFlagStorage) DeleteRiskFlag(id int) error {
 	delete(f.flags, id)
 	return nil
@@ -104,12 +110,12 @@ func (f *fakeRiskFlagStorage) UpdateRiskFlagStatus(tx *sql.Tx, flagID int, newSt
 
 	// Ajouter à l'historique
 	h := &riskflagentity.RiskFlagStatusHistory{
-		ID:          f.nextHistoryID,
-		RiskFlagID:  flagID,
-		FromStatus:  &oldStatus,
-		ToStatus:    newStatus,
-		ChangedBy:   changedBy,
-		Note:        note,
+		ID:         f.nextHistoryID,
+		RiskFlagID: flagID,
+		FromStatus: &oldStatus,
+		ToStatus:   newStatus,
+		ChangedBy:  changedBy,
+		Note:       note,
 	}
 	f.nextHistoryID++
 	f.history[flagID] = append(f.history[flagID], h)
@@ -148,7 +154,7 @@ func TestTransitionRiskFlag(t *testing.T) {
 		Reason:        "Amount exceeds threshold",
 		Score:         30,
 		Level:         "MEDIUM",
-		TransactionId: 1,
+		TransactionId: intPointer(1),
 		TraderId:      1,
 		CustomerId:    1,
 		Status:        string(riskflagentity.RiskFlagStatusOpen),
@@ -191,7 +197,7 @@ func TestTransitionRiskFlag(t *testing.T) {
 		Reason:        "False alert",
 		Score:         10,
 		Level:         "LOW",
-		TransactionId: 2,
+		TransactionId: intPointer(2),
 		TraderId:      1,
 		CustomerId:    1,
 		Status:        string(riskflagentity.RiskFlagStatusOpen),
@@ -212,7 +218,7 @@ func TestTransitionRiskFlag(t *testing.T) {
 		Reason:        "Test",
 		Score:         5,
 		Level:         "LOW",
-		TransactionId: 3,
+		TransactionId: intPointer(3),
 		TraderId:      1,
 		CustomerId:    1,
 		Status:        string(riskflagentity.RiskFlagStatusOpen),
@@ -230,7 +236,7 @@ func TestTransitionRiskFlag(t *testing.T) {
 		Reason:        "Reopen test",
 		Score:         15,
 		Level:         "LOW",
-		TransactionId: 4,
+		TransactionId: intPointer(4),
 		TraderId:      1,
 		CustomerId:    1,
 		Status:        string(riskflagentity.RiskFlagStatusOpen),
@@ -262,7 +268,7 @@ func TestGetStatusHistory(t *testing.T) {
 		Reason:        "Test history",
 		Score:         10,
 		Level:         "LOW",
-		TransactionId: 1,
+		TransactionId: intPointer(1),
 		TraderId:      1,
 		CustomerId:    1,
 		Status:        string(riskflagentity.RiskFlagStatusOpen),
@@ -320,7 +326,7 @@ func TestIsValidRiskFlagStatus(t *testing.T) {
 	invalidStatuses := []string{
 		"INVALID",
 		"",
-		"open", // lowercase
+		"open",      // lowercase
 		"IN REVIEW", // with space
 	}
 

@@ -16,7 +16,7 @@ API Go pour la gestion de transactions de change, avec profils KYC clients, anal
 - Creation automatique de `risk_flags` quand une regle AML/KYC est declenchee.
 - Consultation, filtrage, creation manuelle et suppression logique des `risk_flags`.
 - Initialisation automatique des tables PostgreSQL au demarrage.
-- RBAC (Role-Based Access Control) par role TRADER/MANAGER.
+- RBAC par permissions avec les rôles TRADER, COMPLIANCE_OFFICER, SUPERVISOR et ADMIN.
 - Rollback SQL automatique si l'analyse AML echoue apres creation de transaction.
 - Transactions SQL englobant creation + analyse AML pour la coherence des donnees.
 
@@ -29,6 +29,11 @@ API Go pour la gestion de transactions de change, avec profils KYC clients, anal
 - Port par defaut `8080`
 
 ## Demarrage
+
+Au premier démarrage uniquement, si aucun administrateur actif n'existe, fournir
+`BOOTSTRAP_ADMIN_EMAIL` et `BOOTSTRAP_ADMIN_PASSWORD` dans l'environnement. Le compte
+ADMIN initial est créé (ou réactivé pour cette adresse) par la commande de démarrage,
+jamais par une requête API. Une fois qu'un ADMIN actif existe, ces variables sont ignorées.
 
 ```bash
 make run
@@ -295,7 +300,7 @@ Body:
   "email": "jean@example.com",
   "phone": "+243810000000",
   "status": "ACTIVE",
-  "role": "MANAGER",
+  "role": "COMPLIANCE_OFFICER",
   "store_id": 1,
   "is_active": true
 }
@@ -1310,18 +1315,22 @@ GOCACHE=/private/tmp/fx-app-api-go-build go test ./...
 
 - `RuleConfig.Enabled` existe mais n'est pas encore utilise pour desactiver une regle.
 - Pas encore de screening sanctions, PEP, listes noires ou adverse media.
-- Pas encore de workflow d'investigation complet pour les alertes (`OPEN`, `IN_REVIEW`, `RESOLVED`, `FALSE_POSITIVE`).
+- Workflow d'investigation des alertes avec historique et accès réservé aux permissions de conformité.
 - Pas encore de gestion documentaire KYC: documents, expiration, verification de piece, justificatif d'adresse.
-- Les formats metier de `currency`, `status`, `type`, `role` ne sont pas encore normalises par enum stricte.
+- Les rôles valides sont `TRADER`, `COMPLIANCE_OFFICER`, `SUPERVISOR` et `ADMIN`.
 
 ## Historique Des Modifications
 
+### RBAC et sécurité KYC
+
+- Permissions explicites sur les routes protégées et refus par défaut pour les rôles inconnus.
+- Le statut KYC se modifie uniquement via `/customers/{id}/kyc/status`, réservé à la conformité.
+- Le trader connecté ne lit que ses transactions et les données correspondantes du tableau de bord.
+- Journal d'audit pour les vérifications KYC, changements de rôle et clôtures/suppressions d'alertes.
+
 ### 2026-08-21
 
-- **RBAC par role** : Connexion du `RoleMiddleware` aux routes avec definition des permissions par endpoint.
-  - Routes TRADER/MANAGER : traders, customers, transactions, risk-flags
-  - Routes MANAGER uniquement : suppression de traders et risk-flags
-  - Routes publiques : `/auth/trader/login`, `/analysais`
+- **RBAC par role (version initiale)** : documentation historique de la première configuration.
 
 - **Rollback SQL apres analyse AML** : Les transactions SQL englobent maintenant la creation de transaction et l'analyse AML.
   - Si l'analyse AML echoue, toute la transaction est rollbackee

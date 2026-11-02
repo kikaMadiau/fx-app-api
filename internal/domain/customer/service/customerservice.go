@@ -328,10 +328,32 @@ func (s *CustomerService) UpdateKYCProfile(customerID int, updatedProfile *Custo
 	}
 
 	if _, err := s.TriggerRiskReassessment(customerID); err != nil {
-		return nil, err
+		return updatedProfile, err
 	}
 
 	return updatedProfile, nil
+}
+
+// UpdateKYCStatus ne modifie que le statut KYC via le parcours de validation conformité.
+func (s *CustomerService) UpdateKYCStatus(customerID int, status KYCStatus) (*CustomerKYCProfile, error) {
+	if !status.Valid() {
+		return nil, fmt.Errorf("%w: invalid kyc_status", ErrInvalidKYCProfile)
+	}
+	profile, err := s.GetKYCProfile(customerID)
+	if err != nil {
+		return nil, err
+	}
+	profile.KYCStatus = status
+	if status == Verified || status == EnhancedVerification {
+		profile.LastVerificationDate = time.Now()
+	}
+	if err := s.kycProfileRepo.UpdateKYCProfile(profile); err != nil {
+		return nil, fmt.Errorf("failed to update KYC status: %w", err)
+	}
+	if _, err := s.TriggerRiskReassessment(customerID); err != nil {
+		return profile, err
+	}
+	return profile, nil
 }
 
 // GetKYCProfile récupère le profil KYC courant d'un client.

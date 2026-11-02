@@ -37,7 +37,7 @@ func (s *AuthService) AuthenticateTrader(email, password string) (*AuthResult, e
 		return nil, fmt.Errorf("invalid credentials")
 	}
 	if !trader.IsActive {
-		return nil, fmt.Errorf("trader account is inactive")
+		return nil, fmt.Errorf("invalid credentials")
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(trader.PasswordHash), []byte(password)); err != nil {
 		return nil, fmt.Errorf("invalid credentials")
@@ -54,6 +54,12 @@ func (s *AuthService) AuthenticateTrader(email, password string) (*AuthResult, e
 func HashPassword(password string) (string, error) {
 	if strings.TrimSpace(password) == "" {
 		return "", fmt.Errorf("password is required")
+	}
+	if len([]byte(password)) < 12 {
+		return "", fmt.Errorf("password must be at least 12 bytes")
+	}
+	if len([]byte(password)) > 72 {
+		return "", fmt.Errorf("password must not exceed 72 bytes")
 	}
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)

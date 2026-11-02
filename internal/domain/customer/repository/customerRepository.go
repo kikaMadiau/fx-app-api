@@ -146,6 +146,11 @@ func (r *CustomerRepository) CreateCustomerWithTx(tx *sql.Tx, customer *entity.C
 
 // GetCustomer récupère un client par son ID.
 func (r *CustomerRepository) GetCustomer(id int) (*entity.Customer, error) {
+	return r.GetCustomerWithTx(nil, id)
+}
+
+// GetCustomerWithTx récupère un client par son ID, dans la transaction fournie si elle n'est pas nil.
+func (r *CustomerRepository) GetCustomerWithTx(tx *sql.Tx, id int) (*entity.Customer, error) {
 	query := `
 		SELECT id, full_name, id_number, COALESCE(id_type, ''), COALESCE(phone, ''),
 		       COALESCE(address, ''), created_at, updated_at, deleted_at,
@@ -154,7 +159,7 @@ func (r *CustomerRepository) GetCustomer(id int) (*entity.Customer, error) {
 		WHERE id = $1 AND deleted_at IS NULL`
 	customer := &entity.Customer{}
 
-	err := r.store.DB().QueryRow(query, id).Scan(
+	err := pickExecutor(r.store.DB(), tx).QueryRow(query, id).Scan(
 		&customer.ID,
 		&customer.FullName,
 		&customer.IDNumber,

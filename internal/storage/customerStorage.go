@@ -23,6 +23,9 @@ type CustomerStorage interface {
 	UpdateCustomer(customer *entity.Customer) error
 	UpdateCustomerWithTx(tx *sql.Tx, customer *entity.Customer) error
 	GetCustomer(id int) (*entity.Customer, error)
+	// GetCustomerWithTx lit dans la transaction SQL fournie (nil : connexion normale) et voit donc
+	// un client créé plus tôt dans cette même transaction, pas encore commité.
+	GetCustomerWithTx(tx *sql.Tx, id int) (*entity.Customer, error)
 	GetCustomerByPhone(phone string) (*entity.Customer, error)
 	// ListCustomers renvoie une page de clients actifs et le nombre total de résultats.
 	ListCustomers(filter CustomerFilter) ([]*entity.CustomerSummary, int, error)

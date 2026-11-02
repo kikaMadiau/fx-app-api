@@ -146,7 +146,8 @@ func (s *RiskService) AnalyzeTransactionAndCustomerWithTx(dbTx *sql.Tx, tx *tran
 	customerRisk, customerFlags := s.runCustomerRules(ctx)
 
 	for _, flag := range append(transactionFlags, customerFlags...) {
-		flag.TransactionId = tx.ID
+		transactionID := tx.ID
+		flag.TransactionId = &transactionID
 		flag.TraderId = tx.TraderID
 		flag.CustomerId = tx.CustomerID
 		if err := s.riskFlagRepo.CreateRiskFlagWithTx(dbTx, flag); err != nil {

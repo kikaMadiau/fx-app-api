@@ -38,17 +38,22 @@ func MakeHttpHandleFunc(f ApiFunc) http.HandlerFunc {
 
 func writeAPIError(w http.ResponseWriter, err error) {
 	statusCode := http.StatusInternalServerError
-	message := err.Error()
+	message := "internal server error"
 
 	var httpErr *HTTPError
 	if errors.As(err, &httpErr) {
 		statusCode = httpErr.StatusCode
-		message = httpErr.Error()
+		message = httpErr.Message
 	} else {
 		var statusErr statusCodeError
 		if errors.As(err, &statusErr) {
 			statusCode = statusErr.HTTPStatusCode()
-			message = statusErr.Error()
+			var publicErr interface{ PublicMessage() string }
+			if errors.As(err, &publicErr) {
+				message = publicErr.PublicMessage()
+			} else {
+				message = "request failed"
+			}
 		}
 	}
 
@@ -57,6 +62,8 @@ func writeAPIError(w http.ResponseWriter, err error) {
 			statusCode = sqlStatusCode
 			message = sqlMessage
 		}
+	} else if message == "internal server error" {
+		message = "request failed"
 	}
 
 	WriteJson(w, statusCode, ApiError{Message: message})

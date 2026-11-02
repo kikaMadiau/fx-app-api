@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"strings"
 
+	traderentity "fx-app-api/internal/domain/trader/entity"
+	"fx-app-api/internal/domain/trader/permissions"
 	traderservices "fx-app-api/internal/domain/trader/traderservices"
 	"fx-app-api/internal/storage"
 	"fx-app-api/internal/utils/services"
@@ -41,7 +43,7 @@ func AuthMiddleware(traderRepo storage.TraderStorage) func(http.Handler) http.Ha
 			}
 
 			currentUser, err := traderRepo.GetTraderByEmail(claims.Email)
-			if err != nil || currentUser == nil {
+			if err != nil || !isActiveTrader(currentUser) {
 				http.Error(w, `{"message": "Utilisateur du jeton non trouvé"}`, http.StatusUnauthorized)
 				return
 			}
@@ -53,7 +55,9 @@ func AuthMiddleware(traderRepo storage.TraderStorage) func(http.Handler) http.Ha
 	}
 }
 
-func RoleMiddleware(requiredRole string) func(http.Handler) http.Handler {
+func isActiveTrader(trader *traderentity.Trader) bool { return trader != nil && trader.IsActive }
+
+func RequirePermission(requiredPermission string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			user := traderservices.GetUser(r)
@@ -63,7 +67,7 @@ func RoleMiddleware(requiredRole string) func(http.Handler) http.Handler {
 				return
 			}
 
-			if !hasRole(user.Roles, requiredRole) {
+			if !permissions.Has(user.Roles, requiredPermission) {
 				http.Error(w, `{"message": "Permissions insuffisantes"}`, http.StatusForbidden)
 				return
 			}
@@ -71,16 +75,6 @@ func RoleMiddleware(requiredRole string) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 		})
 	}
-}
-
-func hasRole(roles string, requiredRole string) bool {
-	for _, role := range strings.Split(roles, ",") {
-		if strings.TrimSpace(role) == requiredRole {
-			return true
-		}
-	}
-
-	return strings.TrimSpace(roles) == requiredRole
 }
 
 /*

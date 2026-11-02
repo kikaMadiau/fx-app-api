@@ -3,6 +3,7 @@ package storage
 import (
 	"database/sql"
 	"fmt"
+	"net/url"
 
 	"os"
 	"os/user"
@@ -62,7 +63,24 @@ func NewPostgresStore() (*PostgresStore, error) {
 
 func postgresConnStr() string {
 	if databaseURL := strings.TrimSpace(os.Getenv("DATABASE_URL")); databaseURL != "" {
+		if mode := databaseURLSSLMode(databaseURL); isProductionEnvironment() && (mode == "disable" || mode == "allow") {
+			fmt.Printf("SECURITY ERROR: DATABASE_URL uses sslmode=%s in production environment\n", mode)
+		}
 		return databaseURL
+	}
+
+	// Déterminer le mode SSL par défaut selon l'environnement
+	defaultSSLMode := "prefer" // Bon compromis pour le développement
+	if isProductionEnvironment() {
+		defaultSSLMode = "require" // Exiger SSL en production
+	}
+
+	sslMode := getenv("DB_SSLMODE", defaultSSLMode)
+
+	// Avertissement pour les modes non sécurisés
+	if isProductionEnvironment() && (sslMode == "disable" || sslMode == "allow") {
+		fmt.Printf("⚠️  SECURITY WARNING: DB_SSLMODE=%s in production environment\n", sslMode)
+		fmt.Println("   Database connections are NOT encrypted. Use 'require' or 'verify-full' instead.")
 	}
 
 	parts := []string{
@@ -70,7 +88,7 @@ func postgresConnStr() string {
 		fmt.Sprintf("port=%s", getenv("DB_PORT", "5432")),
 		fmt.Sprintf("user=%s", getenv("DB_USER", defaultDBUser())),
 		fmt.Sprintf("dbname=%s", getenv("DB_NAME", "forex_trader_kyc_db")),
-		fmt.Sprintf("sslmode=%s", getenv("DB_SSLMODE", "disable")),
+		fmt.Sprintf("sslmode=%s", sslMode),
 	}
 
 	if password := strings.TrimSpace(os.Getenv("DB_PASSWORD")); password != "" {
@@ -132,6 +150,10 @@ func getenv(key, fallback string) string {
 }
 
 func redactedConnStr(connStr string) string {
+	if strings.Contains(connStr, "://") {
+		// URL DSNs commonly carry credentials as user:password@authority.
+		return redactDatabaseURL(connStr)
+	}
 	parts := strings.Fields(connStr)
 	for i, part := range parts {
 		if strings.HasPrefix(part, "password=") {
@@ -140,4 +162,97 @@ func redactedConnStr(connStr string) string {
 	}
 
 	return strings.Join(parts, " ")
+}
+
+func redactDatabaseURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "[redacted database URL]"
+	}
+	if u.User != nil {
+		if _, hasPassword := u.User.Password(); hasPassword {
+			u.User = url.UserPassword(u.User.Username(), "REDACTED")
+		}
+	}
+	return u.String()
+}
+
+func databaseURLSSLMode(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	return u.Query().Get("sslmode")
+}
+
+// isProductionEnvironment détermine si l'application s'exécute dans un environnement de production
+func isProductionEnvironment() bool {
+	env := strings.ToLower(strings.TrimSpace(os.Getenv("APP_ENV")))
+
+	// Vérifier les indicateurs courants d'environnement de production
+	if env == "production" || env == "prod" || env == "prd" {
+		return true
+	}
+
+	// Vérifier les variables d'environnement spécifiques à des plateformes cloud
+	if os.Getenv("DYNO") != "" { // Heroku
+		return true
+	}
+	if os.Getenv("K_SERVICE") != "" { // Google Cloud Run
+		return true
+	}
+	if os.Getenv("AWS_LAMBDA_FUNCTION_NAME") != "" { // AWS Lambda
+		return true
+	}
+	if os.Getenv("WEBSITE_SITE_NAME") != "" { // Azure App Service
+		return true
+	}
+
+	// Vérifier si on utilise une base de données distante (non localhost)
+	dbHost := strings.TrimSpace(os.Getenv("DB_HOST"))
+	if dbHost != "" && dbHost != "localhost" && dbHost != "127.0.0.1" {
+		return true
+	}
+	if databaseURL := strings.TrimSpace(os.Getenv("DATABASE_URL")); databaseURL != "" {
+		if parsed, err := url.Parse(databaseURL); err == nil {
+			host := strings.ToLower(parsed.Hostname())
+			if host != "" && host != "localhost" && host != "127.0.0.1" && host != "::1" {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// CheckDatabaseSecurity vérifie la configuration de sécurité de la base de données
+func CheckDatabaseSecurity() error {
+	sslMode := strings.TrimSpace(os.Getenv("DB_SSLMODE"))
+	if databaseURL := strings.TrimSpace(os.Getenv("DATABASE_URL")); databaseURL != "" {
+		sslMode = databaseURLSSLMode(databaseURL)
+	} else if sslMode == "" {
+		sslMode = "prefer"
+		if isProductionEnvironment() {
+			sslMode = "require"
+		}
+	}
+
+	if isProductionEnvironment() {
+		// En production, exiger un mode SSL sécurisé
+		if sslMode == "" || sslMode == "disable" || sslMode == "allow" {
+			return fmt.Errorf("INSECURE: database SSL mode %q in production environment. Use 'require' or 'verify-full'", sslMode)
+		}
+
+		// Recommander verify-full pour la production
+		if sslMode != "verify-full" {
+			fmt.Println("⚠️  RECOMMENDATION: Use DB_SSLMODE=verify-full in production for full certificate validation")
+		}
+	}
+
+	// Vérifier le mot de passe de la base de données
+	if os.Getenv("DB_PASSWORD") == "" && isProductionEnvironment() {
+		fmt.Println("⚠️  WARNING: DB_PASSWORD is empty in production environment")
+	}
+
+	return nil
 }

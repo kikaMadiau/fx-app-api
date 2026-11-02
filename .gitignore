@@ -1,3 +1,28 @@
 .gocache/
 bin/
 .env
+# Clés JWT et fichiers sensibles
+*.pem
+*.key
+*.cert
+jwt/
+temp_jwt_keys/
+
+# Fichiers de clés générés par le script
+jwt_keys/
+
+# Fichiers de développement temporaires
+.env.local
+.env.development
+.env.test
+
+# Logs
+*.log
+logs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
