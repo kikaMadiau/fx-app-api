@@ -520,7 +520,7 @@ func defaultRiskRulesFile() riskRulesFile {
 				Score:           40,
 				Enabled:         boolPtr(true),
 				ThresholdAmount: float64Ptr(100000.0),
-				Window:          "720h",
+				Window:          "72h",
 			},
 			{
 				Type:           "transaction_frequency",

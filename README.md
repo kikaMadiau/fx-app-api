@@ -155,11 +155,11 @@ Le token est signe en `RS256` avec les cles:
 
 Expiration actuelle du token: 24 heures.
 
-Routes publiques:
+Routes accessibles sans jeton:
 
 - `POST /auth/trader/login`
-- `GET /analysais`
-- `POST /traders`
+
+Toutes les autres routes, y compris l'analyse de change et la création d'un trader, exigent un bearer token. Les permissions du rôle sont renvoyées dans `trader.permissions` au login et sur `GET /auth/me`.
 
 Toutes les autres routes exposees par `server.go` passent par la verification du bearer token.
 
@@ -168,24 +168,57 @@ Toutes les autres routes exposees par `server.go` passent par la verification du
 | Methode | Route | Description |
 | --- | --- | --- |
 | `POST` | `/auth/trader/login` | Authentifier un trader et obtenir un JWT. |
-| `GET` | `/analysais` | Lister les analyses de change disponibles. |
+| `GET` | `/auth/me` | Récupérer le profil et les permissions du trader connecté. |
+| `GET` | `/dashboard/summary` | Résumé opérationnel; les données du trader sont limitées à son périmètre. |
+| `GET` | `/analysais` | Lister les analyses de change disponibles (permission `analysis:read`). |
 | `POST` | `/traders` | Creer un cambiste. |
 | `GET` | `/traders/{id}` | Recuperer un cambiste. |
 | `PUT` | `/traders/{id}` | Mettre a jour un cambiste. |
 | `DELETE` | `/traders/{id}` | Supprimer logiquement un cambiste. |
 | `POST` | `/customers` | Creer un client simple. |
 | `POST` | `/customers/kyc` | Creer un client avec profil KYC. |
+| `GET` | `/customers/search?phone=...` | Rechercher un client par téléphone normalisé. |
 | `GET` | `/customers/{id}` | Recuperer un client. |
 | `PUT` | `/customers/{id}` | Mettre a jour un client. |
 | `GET` | `/customers/{id}/kyc` | Recuperer le profil KYC d'un client. |
 | `PUT` | `/customers/{id}/kyc` | Mettre a jour le KYC et recalculer le risque. |
 | `POST` | `/customers/{id}/kyc/reassess` | Recalculer le risque KYC du client. |
+| `PATCH` | `/customers/{id}/kyc/status` | Modifier le statut KYC (permission `kyc:verify`). |
 | `POST` | `/transactions` | Creer une transaction avec conversion, pour un nouveau client ou un client existant. |
+| `GET` | `/transactions` | Lister et filtrer les transactions; pagination et portée limitée pour TRADER. |
 | `GET` | `/transactions/{id}` | Recuperer une transaction. |
 | `POST` | `/risk-flags` | Creer une alerte de risque manuelle. |
 | `GET` | `/risk-flags` | Lister les alertes de risque. |
 | `GET` | `/risk-flags/{id}` | Recuperer une alerte de risque. |
 | `DELETE` | `/risk-flags/{id}` | Supprimer logiquement une alerte de risque. |
+| `PATCH` | `/risk-flags/{id}/status` | Affecter ou faire progresser une investigation d'alerte. |
+| `GET` | `/risk-flags/{id}/history` | Consulter l'historique des changements de statut. |
+
+## RBAC (permissions par rôle)
+
+Chaque route métier exige un JWT valide et la permission indiquée. Les rôles inconnus sont refusés. `401` indique un jeton absent/invalide; `403` indique une permission insuffisante. Les `TRADER` ne peuvent consulter que leurs transactions et leur périmètre du tableau de bord. La création d'une transaction est toujours rattachée au trader authentifié.
+
+| Permission | TRADER | COMPLIANCE_OFFICER | SUPERVISOR | ADMIN |
+| --- | :---: | :---: | :---: | :---: |
+| `profile:read` | ✓ | ✓ | ✓ | ✓ |
+| `dashboard:read` | ✓ | ✓ | ✓ | ✓ |
+| `analysis:read` | — | ✓ | ✓ | ✓ |
+| `trader:manage` | — | — | — | ✓ |
+| `customer:read` | ✓ | ✓ | ✓ | ✓ |
+| `customer:create` | ✓ | ✓ | ✓ | ✓ |
+| `customer:update` | ✓ | ✓ | ✓ | — |
+| `kyc:read` | ✓ | ✓ | — | ✓ |
+| `kyc:update` | ✓ | ✓ | — | ✓ |
+| `kyc:verify` | — | ✓ | — | — |
+| `kyc:reassess` | — | ✓ | — | ✓ |
+| `transaction:create` | ✓ | ✓ | ✓ | ✓ |
+| `transaction:read` | ✓* | ✓ | ✓ | ✓ |
+| `risk_flag:create` | ✓ | ✓ | ✓ | — |
+| `risk_flag:read` | ✓ | ✓ | ✓ | ✓ |
+| `risk_flag:investigate` | — | ✓ | — | — |
+| `risk_flag:delete` | — | — | — | ✓ |
+
+`✓*` : accès limité aux opérations du trader connecté, y compris `GET /transactions` et `GET /transactions/{id}`. La suppression d'alerte est logique. Les routes login restent publiques.
 
 ## Catalogue Des Requetes JSON
 
@@ -261,9 +294,50 @@ Response `200 OK`:
     "deleted_at": null,
     "role": "TRADER",
     "store_id": 1,
-    "is_active": true
+    "is_active": true,
+    "permissions": ["customer:create", "customer:read", "customer:update", "dashboard:read", "kyc:read", "kyc:update", "profile:read", "risk_flag:create", "risk_flag:read", "transaction:create", "transaction:read"]
   }
 }
+```
+
+### `GET /auth/me`
+
+En-tête: `Authorization: Bearer <token>`. Aucun body. Réponse `200 OK`: même objet `trader` que celui du login, y compris `permissions` (liste des permissions effectives du rôle). Exemple abrégé:
+
+```json
+{
+  "id": 1,
+  "name": "Bureau Gombe",
+  "email": "jean@example.com",
+  "role": "TRADER",
+  "store_id": 1,
+  "is_active": true,
+  "permissions": ["customer:create", "customer:read", "customer:update", "dashboard:read", "kyc:read", "kyc:update", "profile:read", "risk_flag:create", "risk_flag:read", "transaction:create", "transaction:read"]
+}
+```
+
+### `GET /dashboard/summary`
+
+En-tête: `Authorization: Bearer <token>`. Aucun body. Réponse `200 OK`:
+
+```json
+{
+  "transactions_today": 12,
+  "transactions_yesterday": 9,
+  "volume_today": [{"currency": "USD", "amount": 12500.75, "converted_amount": 35571408.75, "target_currency": "CDF"}],
+  "active_customers": 8,
+  "new_customers_this_month": 3,
+  "open_alerts": 2,
+  "urgent_alerts": 1
+}
+```
+
+### `GET /analysais`
+
+En-tête: `Authorization: Bearer <token>`, permission `analysis:read`. Aucun body. Réponse `200 OK`:
+
+```json
+[{"pair":"USD/CDF","buy_rate":2770,"sell_rate":2795,"change_rate":0.6}]
 ```
 
 ### `GET /traders/{id}`
@@ -415,6 +489,10 @@ Response `200 OK`: objet `Customer`.
 }
 ```
 
+### `GET /customers/search?phone=+243820000000`
+
+En-tête bearer requis. Le téléphone est normalisé avant recherche. Réponse `200 OK`: objet `Customer` (même format que `GET /customers/{id}`). Si aucun client ne correspond, `404`; téléphone absent ou invalide, `400`.
+
 ### `PUT /customers/{id}`
 
 Body:
@@ -500,6 +578,33 @@ Response `200 OK`: objet `Customer` apres recalcul du risque.
   "deleted_at": null,
   "risk_level": "LOW",
   "risk_score": 0
+}
+```
+
+### `PATCH /customers/{id}/kyc/status`
+
+Permission requise: `kyc:verify` (attribuée à `COMPLIANCE_OFFICER` uniquement). Cette route est le seul moyen de modifier le statut; `PUT /customers/{id}/kyc` conserve le statut existant.
+
+```json
+{"kyc_status":"VERIFIED"}
+```
+
+Réponse `200 OK`: objet `CustomerKYCProfile` mis à jour. Valeurs acceptées: `UNVERIFIED`, `PARTIALLY_VERIFIED`, `VERIFIED`, `ENHANCED_VERIFICATION`.
+
+```json
+{
+  "id": 1,
+  "customer_id": 1,
+  "legal_nature": "INDIVIDUAL",
+  "activity_profile": "PROFESSIONAL",
+  "kyc_status": "VERIFIED",
+  "profession": "Consultant",
+  "source_of_funds": "Consulting income",
+  "purpose_of_operations": "FX operations",
+  "expected_volume": 25000,
+  "expected_frequency": 8,
+  "created_at": "2026-08-21T12:00:00Z",
+  "updated_at": "2026-08-21T12:30:00Z"
 }
 ```
 
@@ -594,6 +699,38 @@ Body: aucun.
 
 Response `200 OK`: objet `Transaction`.
 
+### `GET /transactions`
+
+En-tête bearer requis. Paramètres facultatifs: `q` (nom/téléphone client ou ID exact), `status`, `type`, `risk_level`, `customer_id`, `limit` (défaut 20, maximum 100), `offset` (défaut 0). Exemple: `GET /transactions?q=Grace&status=COMPLETED&limit=10&offset=0`.
+
+Réponse `200 OK`; `items` contient les champs de `Transaction` plus les informations client:
+
+```json
+{
+  "items": [{
+    "id": 10,
+    "amount": 12500.75,
+    "currency": "USD",
+    "target_currency": "CDF",
+    "type": "BUY",
+    "rate": 2845.5,
+    "converted_amount": 35571408.75,
+    "risk_level": "MEDIUM",
+    "risk_score": 30,
+    "status": "COMPLETED",
+    "trader_id": 1,
+    "customer_id": 1,
+    "customer_name": "Grace Hopper",
+    "customer_phone": "+243820000000",
+    "customer_id_type": "PASSPORT",
+    "customer_id_number": "ID-123456"
+  }],
+  "total": 1,
+  "limit": 10,
+  "offset": 0
+}
+```
+
 ### `POST /risk-flags`
 
 Body:
@@ -632,25 +769,21 @@ Response `201 Created`:
 
 Body: aucun.
 
-Query params optionnels:
-
-- `transaction_id`
-- `trader_id`
-- `customer_id`
+Query params optionnels: `transaction_id`, `trader_id`, `customer_id`, `status`, `level`, `q`, `assigned_to`, `limit` (défaut 20, maximum 100), `offset` (défaut 0). Les niveaux acceptés: `LOW`, `MEDIUM`, `HIGH`, `CRITICAL`; `q` recherche dans les données associées.
 
 Exemples:
 
 ```http
 GET /risk-flags
 GET /risk-flags?transaction_id=10
-GET /risk-flags?customer_id=1&trader_id=1
+GET /risk-flags?customer_id=1&status=OPEN&level=HIGH&limit=10&offset=0
 ```
 
 Response `200 OK`:
 
 ```json
-[
-  {
+{
+  "items": [{
     "id": 3,
     "flag": "MANUAL_REVIEW",
     "reason": "Document KYC a verifier",
@@ -659,11 +792,19 @@ Response `200 OK`:
     "transaction_id": 10,
     "trader_id": 1,
     "customer_id": 1,
+    "status": "OPEN",
+    "assigned_to": null,
+    "customer_name": "Grace Hopper",
+    "customer": {"id": 1, "full_name": "Grace Hopper", "phone": "+243820000000", "kyc_status": "VERIFIED"},
+    "transaction": {"id": 10, "type": "BUY", "currency": "USD", "amount": 12500.75, "rate": 2845.5, "converted_amount": 35571408.75, "created_at": "2026-08-21T12:30:00Z"},
     "created_at": "2026-08-21T12:30:00Z",
     "updated_at": "2026-08-21T12:30:00Z",
     "deleted_at": null
-  }
-]
+  }],
+  "total": 1,
+  "limit": 10,
+  "offset": 0
+}
 ```
 
 ### `GET /risk-flags/{id}`
@@ -677,6 +818,30 @@ Response `200 OK`: objet `RiskFlag`.
 Body: aucun.
 
 Response: `204 No Content`.
+
+### `PATCH /risk-flags/{id}/status`
+
+Permission requise: `risk_flag:investigate` (`COMPLIANCE_OFFICER`). Body pour assigner et commencer l'examen:
+
+```json
+{"status":"IN_REVIEW","assigned_to":2}
+```
+
+Pour clôturer, `resolution_note` est obligatoire:
+
+```json
+{"status":"RESOLVED","assigned_to":2,"resolution_note":"Documents vérifiés, activité conforme."}
+```
+
+Les statuts sont `OPEN`, `IN_REVIEW`, `RESOLVED`, `FALSE_POSITIVE`; transitions invalides: `409 Conflict`. La fermeture par le trader à l'origine de la transaction est refusée (`403`). Réponse `200 OK`: objet `RiskFlag` actualisé, avec `status`, `assigned_to`, `resolution_note`, `resolved_at` et `resolved_by` selon l'état.
+
+### `GET /risk-flags/{id}/history`
+
+Permission `risk_flag:read`. Aucun body. Réponse `200 OK`:
+
+```json
+[{"id":1,"risk_flag_id":3,"from_status":"OPEN","to_status":"IN_REVIEW","changed_by":2,"note":"","created_at":"2026-08-21T12:35:00Z"}]
+```
 
 ## Traders
 
@@ -1317,18 +1482,20 @@ GOCACHE=/private/tmp/fx-app-api-go-build go test ./...
 
 - `RuleConfig.Enabled` existe mais n'est pas encore utilise pour desactiver une regle.
 - Pas encore de screening sanctions, PEP, listes noires ou adverse media.
-- Workflow d'investigation des alertes avec historique et accès réservé aux permissions de conformité.
+- Pas encore de screening sanctions, PEP, listes noires ou adverse media.
 - Pas encore de gestion documentaire KYC: documents, expiration, verification de piece, justificatif d'adresse.
 - Les rôles valides sont `TRADER`, `COMPLIANCE_OFFICER`, `SUPERVISOR` et `ADMIN`.
 
 ## Historique Des Modifications
 
-### RBAC et sécurité KYC
+### RBAC, investigation et sécurité KYC
 
-- Permissions explicites sur les routes protégées et refus par défaut pour les rôles inconnus.
+- Permissions explicites appliquées à toutes les routes protégées et refus par défaut pour les rôles inconnus.
 - Le statut KYC se modifie uniquement via `/customers/{id}/kyc/status`, réservé à la conformité.
-- Le trader connecté ne lit que ses transactions et les données correspondantes du tableau de bord.
-- Journal d'audit pour les vérifications KYC, changements de rôle et clôtures/suppressions d'alertes.
+- Les traders ne lisent que leurs transactions; `/dashboard/summary` applique aussi leur portée.
+- Journal d'audit des changements de profil/statut KYC et des suppressions/clôtures d'alertes.
+- Routes de recherche client, liste filtrable/paginée des transactions, résumé du dashboard et profil `/auth/me`.
+- Workflow de risque avec affectation, transition de statut, notes de résolution et historique.
 
 ### 2026-08-21
 
