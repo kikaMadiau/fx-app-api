@@ -26,6 +26,8 @@ func (r *RiskFlagRepository) Store() *storage.PostgresStore {
 	return r.store
 }
 
+func (r *RiskFlagRepository) BeginTx() (*sql.Tx, error) { return r.store.DB().Begin() }
+
 // Init crée la table 'risk_flags' si elle n'existe pas.
 func (r *RiskFlagRepository) Init() error {
 	createTableSQL := `
@@ -380,9 +382,19 @@ func (r *RiskFlagRepository) ListRiskFlagsWithDetails(filter storage.RiskFlagFil
 
 // DeleteRiskFlag effectue une suppression logique d'un indicateur de risque.
 func (r *RiskFlagRepository) DeleteRiskFlag(id int) error {
+	return r.DeleteRiskFlagWithTx(nil, id)
+}
+
+func (r *RiskFlagRepository) DeleteRiskFlagWithTx(tx *sql.Tx, id int) error {
 	query := `UPDATE risk_flags SET deleted_at = $1, updated_at = $1 WHERE id = $2 AND deleted_at IS NULL`
 
-	result, err := r.store.DB().Exec(query, time.Now(), id)
+	var result sql.Result
+	var err error
+	if tx != nil {
+		result, err = tx.Exec(query, time.Now(), id)
+	} else {
+		result, err = r.store.DB().Exec(query, time.Now(), id)
+	}
 	if err != nil {
 		return fmt.Errorf("failed to delete risk flag: %w", err)
 	}
@@ -416,7 +428,7 @@ func (r *RiskFlagRepository) UpdateRiskFlagStatus(tx *sql.Tx, flagID int, newSta
 		return updated, nil
 	}
 	// Récupérer le flag actuel
-	query := `SELECT id, status, assigned_to, resolution_note, resolved_at, resolved_by FROM risk_flags WHERE id = $1 AND deleted_at IS NULL`
+	query := `SELECT id, status, assigned_to, resolution_note, resolved_at, resolved_by FROM risk_flags WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`
 	var currentStatus string
 	var currentAssignedTo *int
 	var currentResolutionNote string
@@ -437,12 +449,16 @@ func (r *RiskFlagRepository) UpdateRiskFlagStatus(tx *sql.Tx, flagID int, newSta
 	}
 
 	// Valider resolution_note pour RESOLVED et FALSE_POSITIVE
+	note = strings.TrimSpace(note)
 	if (newStatus == string(entity.RiskFlagStatusResolved) || newStatus == string(entity.RiskFlagStatusFalsePositive)) && note == "" {
 		return nil, fmt.Errorf("%w: %s", storage.ErrResolutionNoteRequired, newStatus)
 	}
 
 	// Valider assigned_to pour IN_REVIEW
 	if newStatus == string(entity.RiskFlagStatusInReview) {
+		if assignedTo != nil && *assignedTo <= 0 {
+			return nil, storage.ErrAssignedToRequired
+		}
 		if assignedTo == nil || *assignedTo == 0 {
 			if currentAssignedTo == nil || *currentAssignedTo == 0 {
 				return nil, storage.ErrAssignedToRequired

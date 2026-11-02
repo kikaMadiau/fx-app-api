@@ -1,6 +1,7 @@
 package service
 
 import (
+	"database/sql"
 	"fmt"
 	riskflagentity "fx-app-api/internal/domain/riskflag/entity"
 	"fx-app-api/internal/storage"
@@ -25,13 +26,17 @@ type TransitionRequest struct {
 
 // TransitionRiskFlag effectue une transition de statut avec validation et historique.
 func (s *InvestigationService) TransitionRiskFlag(flagID int, newStatus string, changedBy int, note string, assignedTo *int) (*riskflagentity.RiskFlag, error) {
+	return s.TransitionRiskFlagWithTx(nil, flagID, newStatus, changedBy, note, assignedTo)
+}
+
+func (s *InvestigationService) TransitionRiskFlagWithTx(tx *sql.Tx, flagID int, newStatus string, changedBy int, note string, assignedTo *int) (*riskflagentity.RiskFlag, error) {
 	// Valider le statut
 	if !riskflagentity.IsValidRiskFlagStatus(newStatus) {
 		return nil, fmt.Errorf("invalid status: %s", newStatus)
 	}
 
 	// Effectuer la transition dans la base de données
-	updatedFlag, err := s.riskFlagRepo.UpdateRiskFlagStatus(nil, flagID, newStatus, changedBy, note, assignedTo)
+	updatedFlag, err := s.riskFlagRepo.UpdateRiskFlagStatus(tx, flagID, newStatus, changedBy, note, assignedTo)
 	if err != nil {
 		return nil, err
 	}

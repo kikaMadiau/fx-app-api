@@ -8,6 +8,7 @@ import (
 	customerservice "fx-app-api/internal/domain/customer/service"
 	dashboardrepository "fx-app-api/internal/domain/dashboard/repository"
 	riskservice "fx-app-api/internal/domain/riskflag/service"
+	traderentity "fx-app-api/internal/domain/trader/entity"
 	traderauthservice "fx-app-api/internal/domain/trader/traderservices"
 	"fx-app-api/internal/storage"
 	"net/http"
@@ -31,6 +32,22 @@ type AuditLogger interface {
 	Record(actorID int, action, resourceType string, resourceID int, before, after any) error
 }
 
+type transactionalAuditLogger interface {
+	RecordWithTx(tx *sql.Tx, actorID int, action, resourceType string, resourceID int, before, after any) error
+}
+
+type transactionalTraderStore interface {
+	BeginTx() (*sql.Tx, error)
+	CreateTraderWithTx(*sql.Tx, *traderentity.Trader) error
+	UpdateTraderWithTx(*sql.Tx, *traderentity.Trader) error
+	DeleteTraderWithTx(*sql.Tx, int) error
+}
+
+type transactionalRiskFlagStore interface {
+	BeginTx() (*sql.Tx, error)
+	DeleteRiskFlagWithTx(*sql.Tx, int) error
+}
+
 func (h *Handler) SetAuditLogger(logger AuditLogger) { h.auditLogger = logger }
 
 func (h *Handler) recordAudit(r *http.Request, action, resourceType string, resourceID int, before, after any) error {
@@ -42,6 +59,21 @@ func (h *Handler) recordAudit(r *http.Request, action, resourceType string, reso
 		return fmt.Errorf("authenticated user is unavailable for audit")
 	}
 	return h.auditLogger.Record(user.Id, action, resourceType, resourceID, before, after)
+}
+
+func (h *Handler) recordAuditWithTx(r *http.Request, tx *sql.Tx, action, resourceType string, resourceID int, before, after any) error {
+	if h.auditLogger == nil {
+		return nil
+	}
+	user := traderauthservice.GetUser(r)
+	if user == nil {
+		return fmt.Errorf("authenticated user is unavailable for audit")
+	}
+	logger, ok := h.auditLogger.(transactionalAuditLogger)
+	if !ok {
+		return fmt.Errorf("audit logger does not support transactions")
+	}
+	return logger.RecordWithTx(tx, user.Id, action, resourceType, resourceID, before, after)
 }
 
 type HTTPError struct {

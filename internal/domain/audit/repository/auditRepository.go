@@ -28,6 +28,11 @@ func (r *AuditRepository) Init() error {
 	return err
 }
 func (r *AuditRepository) Record(actorID int, action, resourceType string, resourceID int, before, after any) error {
+	return r.RecordWithTx(nil, actorID, action, resourceType, resourceID, before, after)
+}
+
+// RecordWithTx écrit l'audit dans la transaction de la mutation lorsqu'elle est fournie.
+func (r *AuditRepository) RecordWithTx(tx *sql.Tx, actorID int, action, resourceType string, resourceID int, before, after any) error {
 	beforeJSON, err := marshalNullable(before)
 	if err != nil {
 		return fmt.Errorf("marshal audit before state: %w", err)
@@ -36,7 +41,12 @@ func (r *AuditRepository) Record(actorID int, action, resourceType string, resou
 	if err != nil {
 		return fmt.Errorf("marshal audit after state: %w", err)
 	}
-	_, err = r.db.Exec(`INSERT INTO audit_logs(actor_trader_id, action, resource_type, resource_id, before_data, after_data) VALUES($1,$2,$3,$4,$5,$6)`, actorID, action, resourceType, resourceID, beforeJSON, afterJSON)
+	query := `INSERT INTO audit_logs(actor_trader_id, action, resource_type, resource_id, before_data, after_data) VALUES($1,$2,$3,$4,$5,$6)`
+	if tx != nil {
+		_, err = tx.Exec(query, actorID, action, resourceType, resourceID, beforeJSON, afterJSON)
+	} else {
+		_, err = r.db.Exec(query, actorID, action, resourceType, resourceID, beforeJSON, afterJSON)
+	}
 	if err != nil {
 		return fmt.Errorf("write audit record: %w", err)
 	}

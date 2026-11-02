@@ -69,6 +69,12 @@ func (r *TraderRepository) Init() error {
 
 // CreateTrader insère un nouveau cambiste dans la base de données.
 func (r *TraderRepository) CreateTrader(trader *entity.Trader) error {
+	return r.CreateTraderWithTx(nil, trader)
+}
+
+func (r *TraderRepository) BeginTx() (*sql.Tx, error) { return r.store.DB().Begin() }
+
+func (r *TraderRepository) CreateTraderWithTx(tx *sql.Tx, trader *entity.Trader) error {
 	if strings.TrimSpace(trader.Roles) == "" {
 		trader.Roles = string(permissions.Trader)
 	}
@@ -87,20 +93,28 @@ func (r *TraderRepository) CreateTrader(trader *entity.Trader) error {
 	trader.CreatedAt = time.Now()
 	trader.UpdatedAt = time.Now()
 
-	err := r.store.DB().QueryRow(query,
-		trader.Name,
-		trader.FirstName,
-		trader.LastName,
-		trader.Email,
-		trader.Phone,
-		trader.Status,
-		trader.Roles,
-		trader.PasswordHash,
-		trader.StoreId,
-		trader.IsActive,
-		trader.CreatedAt,
-		trader.UpdatedAt,
-	).Scan(&trader.Id, &trader.CreatedAt, &trader.UpdatedAt)
+	var row interface{ Scan(...any) error }
+	if tx != nil {
+		row = tx.QueryRow(query,
+			trader.Name, trader.FirstName, trader.LastName, trader.Email, trader.Phone, trader.Status,
+			trader.Roles, trader.PasswordHash, trader.StoreId, trader.IsActive, trader.CreatedAt, trader.UpdatedAt)
+	} else {
+		row = r.store.DB().QueryRow(query,
+			trader.Name,
+			trader.FirstName,
+			trader.LastName,
+			trader.Email,
+			trader.Phone,
+			trader.Status,
+			trader.Roles,
+			trader.PasswordHash,
+			trader.StoreId,
+			trader.IsActive,
+			trader.CreatedAt,
+			trader.UpdatedAt,
+		)
+	}
+	err := row.Scan(&trader.Id, &trader.CreatedAt, &trader.UpdatedAt)
 
 	if err != nil {
 		return fmt.Errorf("failed to create trader: %w", err)
@@ -212,6 +226,18 @@ func (r *TraderRepository) GetTraderByEmail(email string) (*entity.Trader, error
 
 // UpdateTrader met à jour les informations d'un cambiste.
 func (r *TraderRepository) UpdateTrader(trader *entity.Trader) error {
+	tx, err := r.BeginTx()
+	if err != nil {
+		return fmt.Errorf("begin trader update: %w", err)
+	}
+	defer tx.Rollback()
+	if err := r.UpdateTraderWithTx(tx, trader); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (r *TraderRepository) UpdateTraderWithTx(tx *sql.Tx, trader *entity.Trader) error {
 	role, ok := permissions.NormalizeRole(trader.Roles)
 	if !ok {
 		return fmt.Errorf("invalid trader role: %s", trader.Roles)
@@ -225,11 +251,6 @@ func (r *TraderRepository) UpdateTrader(trader *entity.Trader) error {
 
 	trader.UpdatedAt = time.Now()
 
-	tx, err := r.store.DB().Begin()
-	if err != nil {
-		return fmt.Errorf("begin trader update: %w", err)
-	}
-	defer tx.Rollback()
 	if _, err := tx.Exec(`LOCK TABLE traders IN EXCLUSIVE MODE`); err != nil {
 		return fmt.Errorf("lock trader access update: %w", err)
 	}
@@ -250,7 +271,7 @@ func (r *TraderRepository) UpdateTrader(trader *entity.Trader) error {
 			return storage.ErrLastActiveAdmin
 		}
 	}
-	_, err = tx.Exec(query,
+	_, err := tx.Exec(query,
 		trader.Name,
 		trader.FirstName,
 		trader.LastName,
@@ -267,7 +288,7 @@ func (r *TraderRepository) UpdateTrader(trader *entity.Trader) error {
 	if err != nil {
 		return err
 	}
-	return tx.Commit()
+	return nil
 }
 
 func (r *TraderRepository) CountActiveAdmins() (int, error) {
@@ -282,11 +303,18 @@ func blocksLastAdminRemoval(currentRole string, currentActive bool, activeAdmins
 
 // DeleteTrader effectue une suppression logique (soft delete) d'un cambiste.
 func (r *TraderRepository) DeleteTrader(id int) error {
-	tx, err := r.store.DB().Begin()
+	tx, err := r.BeginTx()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	if err := r.DeleteTraderWithTx(tx, id); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (r *TraderRepository) DeleteTraderWithTx(tx *sql.Tx, id int) error {
 	if _, err := tx.Exec(`LOCK TABLE traders IN EXCLUSIVE MODE`); err != nil {
 		return err
 	}
@@ -310,5 +338,5 @@ func (r *TraderRepository) DeleteTrader(id int) error {
 	if _, err := tx.Exec(`UPDATE traders SET deleted_at = $1, updated_at=$1 WHERE id = $2`, time.Now(), id); err != nil {
 		return err
 	}
-	return tx.Commit()
+	return nil
 }

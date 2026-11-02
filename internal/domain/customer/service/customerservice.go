@@ -290,6 +290,11 @@ func (s *CustomerService) calculateInitialRisk(customer *entity.Customer, profil
 
 // UpdateKYCProfile met à jour le profil KYC d'un client puis relance son évaluation de risque.
 func (s *CustomerService) UpdateKYCProfile(customerID int, updatedProfile *CustomerKYCProfile) (*CustomerKYCProfile, error) {
+	return s.UpdateKYCProfileWithTx(nil, customerID, updatedProfile)
+}
+
+// UpdateKYCProfileWithTx conserve le même comportement métier en participant à une transaction externe.
+func (s *CustomerService) UpdateKYCProfileWithTx(tx *sql.Tx, customerID int, updatedProfile *CustomerKYCProfile) (*CustomerKYCProfile, error) {
 	if s.kycProfileRepo == nil {
 		return nil, fmt.Errorf("KYC profile repository is not configured")
 	}
@@ -297,11 +302,11 @@ func (s *CustomerService) UpdateKYCProfile(customerID int, updatedProfile *Custo
 		return nil, fmt.Errorf("KYC profile is required")
 	}
 
-	if _, err := s.customerRepo.GetCustomer(customerID); err != nil {
+	if _, err := s.customerRepo.GetCustomerWithTx(tx, customerID); err != nil {
 		return nil, fmt.Errorf("failed to get customer %d: %w", customerID, err)
 	}
 
-	existingProfile, err := s.kycProfileRepo.GetKYCProfileByCustomerID(customerID)
+	existingProfile, err := getKYCProfileWithTx(s.kycProfileRepo, tx, customerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get KYC profile for customer %d: %w", customerID, err)
 	}
@@ -323,11 +328,11 @@ func (s *CustomerService) UpdateKYCProfile(customerID int, updatedProfile *Custo
 		return nil, err
 	}
 
-	if err := s.kycProfileRepo.UpdateKYCProfile(updatedProfile); err != nil {
+	if err := updateKYCProfileWithTx(s.kycProfileRepo, tx, updatedProfile); err != nil {
 		return nil, fmt.Errorf("failed to update KYC profile: %w", err)
 	}
 
-	if _, err := s.TriggerRiskReassessment(customerID); err != nil {
+	if _, err := s.TriggerRiskReassessmentWithTx(tx, customerID); err != nil {
 		return updatedProfile, err
 	}
 
@@ -336,10 +341,14 @@ func (s *CustomerService) UpdateKYCProfile(customerID int, updatedProfile *Custo
 
 // UpdateKYCStatus ne modifie que le statut KYC via le parcours de validation conformité.
 func (s *CustomerService) UpdateKYCStatus(customerID int, status KYCStatus) (*CustomerKYCProfile, error) {
+	return s.UpdateKYCStatusWithTx(nil, customerID, status)
+}
+
+func (s *CustomerService) UpdateKYCStatusWithTx(tx *sql.Tx, customerID int, status KYCStatus) (*CustomerKYCProfile, error) {
 	if !status.Valid() {
 		return nil, fmt.Errorf("%w: invalid kyc_status", ErrInvalidKYCProfile)
 	}
-	profile, err := s.GetKYCProfile(customerID)
+	profile, err := getKYCProfileWithTx(s.kycProfileRepo, tx, customerID)
 	if err != nil {
 		return nil, err
 	}
@@ -347,10 +356,10 @@ func (s *CustomerService) UpdateKYCStatus(customerID int, status KYCStatus) (*Cu
 	if status == Verified || status == EnhancedVerification {
 		profile.LastVerificationDate = time.Now()
 	}
-	if err := s.kycProfileRepo.UpdateKYCProfile(profile); err != nil {
+	if err := updateKYCProfileWithTx(s.kycProfileRepo, tx, profile); err != nil {
 		return nil, fmt.Errorf("failed to update KYC status: %w", err)
 	}
-	if _, err := s.TriggerRiskReassessment(customerID); err != nil {
+	if _, err := s.TriggerRiskReassessmentWithTx(tx, customerID); err != nil {
 		return profile, err
 	}
 	return profile, nil
@@ -372,16 +381,20 @@ func (s *CustomerService) GetKYCProfile(customerID int) (*CustomerKYCProfile, er
 
 // TriggerRiskReassessment recalcule le risque global d'un client à partir de son profil KYC courant.
 func (s *CustomerService) TriggerRiskReassessment(customerID int) (*entity.Customer, error) {
+	return s.TriggerRiskReassessmentWithTx(nil, customerID)
+}
+
+func (s *CustomerService) TriggerRiskReassessmentWithTx(tx *sql.Tx, customerID int) (*entity.Customer, error) {
 	if s.kycProfileRepo == nil {
 		return nil, fmt.Errorf("KYC profile repository is not configured")
 	}
 
-	customer, err := s.customerRepo.GetCustomer(customerID)
+	customer, err := s.customerRepo.GetCustomerWithTx(tx, customerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get customer %d: %w", customerID, err)
 	}
 
-	kycProfile, err := s.kycProfileRepo.GetKYCProfileByCustomerID(customerID)
+	kycProfile, err := getKYCProfileWithTx(s.kycProfileRepo, tx, customerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get KYC profile for customer %d: %w", customerID, err)
 	}
@@ -390,11 +403,37 @@ func (s *CustomerService) TriggerRiskReassessment(customerID int) (*entity.Custo
 	customer.RiskScore = riskScore
 	customer.RiskLevel = riskLevel
 
-	if err := s.customerRepo.UpdateCustomer(customer); err != nil {
+	if err := s.customerRepo.UpdateCustomerWithTx(tx, customer); err != nil {
 		return nil, fmt.Errorf("failed to update customer %d risk score: %w", customerID, err)
 	}
 
 	log.Printf("Risk reassessment for customer %d set to %s. Reasons: %v", customerID, riskLevel, reasons)
 
 	return customer, nil
+}
+
+type kycProfileTxReader interface {
+	GetKYCProfileByCustomerIDWithTx(*sql.Tx, int) (*CustomerKYCProfile, error)
+}
+type kycProfileTxWriter interface {
+	UpdateKYCProfileWithTx(*sql.Tx, *CustomerKYCProfile) error
+}
+
+func getKYCProfileWithTx(repo KYCProfileStorage, tx *sql.Tx, customerID int) (*CustomerKYCProfile, error) {
+	if tx != nil {
+		if transactional, ok := repo.(kycProfileTxReader); ok {
+			return transactional.GetKYCProfileByCustomerIDWithTx(tx, customerID)
+		}
+	}
+	return repo.GetKYCProfileByCustomerID(customerID)
+}
+
+func updateKYCProfileWithTx(repo KYCProfileStorage, tx *sql.Tx, profile *CustomerKYCProfile) error {
+	if tx != nil {
+		if transactional, ok := repo.(kycProfileTxWriter); ok {
+			return transactional.UpdateKYCProfileWithTx(tx, profile)
+		}
+		return fmt.Errorf("KYC profile repository does not support transactions")
+	}
+	return repo.UpdateKYCProfile(profile)
 }

@@ -39,12 +39,25 @@ func (h *Handler) HandleUpdateKYCProfile(w http.ResponseWriter, r *http.Request)
 	}
 	profile.KYCStatus = existing.KYCStatus
 	profile.LastVerificationDate = existing.LastVerificationDate
-
-	updatedProfile, err := h.customerService.UpdateKYCProfile(id, &profile)
-	if updatedProfile != nil {
-		if auditErr := h.recordAudit(r, "kyc.profile.update", "customer_kyc_profile", id, existing, updatedProfile); auditErr != nil {
+	var updatedProfile *customerservice.CustomerKYCProfile
+	if h.auditLogger != nil {
+		tx, txErr := h.customerStore.BeginTx()
+		if txErr != nil {
+			return fmt.Errorf("begin KYC profile update: %w", txErr)
+		}
+		defer tx.Rollback()
+		updatedProfile, err = h.customerService.UpdateKYCProfileWithTx(tx, id, &profile)
+		if err != nil {
+			return customerWriteError(err, "update KYC profile")
+		}
+		if auditErr := h.recordAuditWithTx(r, tx, "kyc.profile.update", "customer_kyc_profile", id, existing, updatedProfile); auditErr != nil {
 			return fmt.Errorf("failed to audit KYC profile update: %w", auditErr)
 		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit KYC profile update: %w", err)
+		}
+	} else {
+		updatedProfile, err = h.customerService.UpdateKYCProfile(id, &profile)
 	}
 	if err != nil {
 		return customerWriteError(err, "update KYC profile")
@@ -77,11 +90,25 @@ func (h *Handler) HandleUpdateKYCStatus(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		return customerWriteError(err, "get KYC profile")
 	}
-	profile, err := h.customerService.UpdateKYCStatus(id, req.KYCStatus)
-	if profile != nil {
-		if auditErr := h.recordAudit(r, "kyc.status.update", "customer_kyc_profile", id, before, profile); auditErr != nil {
+	var profile *customerservice.CustomerKYCProfile
+	if h.auditLogger != nil {
+		tx, txErr := h.customerStore.BeginTx()
+		if txErr != nil {
+			return fmt.Errorf("begin KYC status update: %w", txErr)
+		}
+		defer tx.Rollback()
+		profile, err = h.customerService.UpdateKYCStatusWithTx(tx, id, req.KYCStatus)
+		if err != nil {
+			return customerWriteError(err, "update KYC status")
+		}
+		if auditErr := h.recordAuditWithTx(r, tx, "kyc.status.update", "customer_kyc_profile", id, before, profile); auditErr != nil {
 			return fmt.Errorf("failed to audit KYC status update: %w", auditErr)
 		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit KYC status update: %w", err)
+		}
+	} else {
+		profile, err = h.customerService.UpdateKYCStatus(id, req.KYCStatus)
 	}
 	if err != nil {
 		return customerWriteError(err, "update KYC status")

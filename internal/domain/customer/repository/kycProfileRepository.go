@@ -121,7 +121,7 @@ func (r *kycProfileRepository) GetKYCProfileByCustomerIDWithTx(tx *sql.Tx, custo
 	profile := &customerservice.CustomerKYCProfile{}
 	var lastVerificationDate sql.NullTime
 
-	err := r.store.DB().QueryRow(query, customerID).Scan(
+	err := pickExecutor(r.store.DB(), tx).QueryRow(query, customerID).Scan(
 		&profile.ID,
 		&profile.CustomerID,
 		&profile.LegalNature,
@@ -155,6 +155,10 @@ func (r *kycProfileRepository) GetKYCProfileByCustomerIDWithTx(tx *sql.Tx, custo
 
 // UpdateKYCProfile met à jour un profil KYC existant.
 func (r *kycProfileRepository) UpdateKYCProfile(profile *customerservice.CustomerKYCProfile) error {
+	return r.UpdateKYCProfileWithTx(nil, profile)
+}
+
+func (r *kycProfileRepository) UpdateKYCProfileWithTx(tx *sql.Tx, profile *customerservice.CustomerKYCProfile) error {
 	query := `
 		UPDATE customer_kyc_profiles SET
 			legal_nature = $1,
@@ -174,7 +178,7 @@ func (r *kycProfileRepository) UpdateKYCProfile(profile *customerservice.Custome
 
 	profile.UpdatedAt = time.Now()
 
-	result, err := r.store.DB().Exec(query,
+	result, err := pickExecutor(r.store.DB(), tx).Exec(query,
 		profile.LegalNature,
 		profile.ActivityProfile,
 		profile.KYCStatus,

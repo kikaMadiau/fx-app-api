@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	riskflagentity "fx-app-api/internal/domain/riskflag/entity"
@@ -117,12 +118,18 @@ func (h *Handler) HandleCreateRiskFlag(w http.ResponseWriter, r *http.Request) e
 	if req.CustomerID <= 0 {
 		return badRequest("customer_id is required", nil)
 	}
+	if req.TraderID < 0 {
+		return badRequest("trader_id must be a positive integer", nil)
+	}
 	if utf8.RuneCountInString(strings.TrimSpace(req.Flag)) > 255 {
 		return badRequest("flag must be at most 255 characters", nil)
 	}
 	user := traderservices.GetUser(r)
 	if user == nil {
 		return &HTTPError{StatusCode: http.StatusUnauthorized, Message: "unauthenticated"}
+	}
+	if req.TraderID > 0 && req.TraderID != user.Id {
+		return &HTTPError{StatusCode: http.StatusForbidden, Message: "trader_id must match the authenticated trader"}
 	}
 	if _, err := h.customerStore.GetCustomer(req.CustomerID); err != nil {
 		if errors.Is(err, storage.ErrCustomerIDNotFound) {
@@ -209,14 +216,34 @@ func (h *Handler) HandleDeleteRiskFlag(w http.ResponseWriter, r *http.Request) e
 		}
 		return fmt.Errorf("failed to get risk flag: %w", err)
 	}
-	if err := h.riskFlagStore.DeleteRiskFlag(id); err != nil {
+	if h.auditLogger != nil {
+		store, ok := h.riskFlagStore.(transactionalRiskFlagStore)
+		if !ok {
+			return fmt.Errorf("risk flag repository does not support transactions")
+		}
+		tx, err := store.BeginTx()
+		if err != nil {
+			return fmt.Errorf("begin risk flag deletion: %w", err)
+		}
+		defer tx.Rollback()
+		err = store.DeleteRiskFlagWithTx(tx, id)
+		if err == nil {
+			err = h.recordAuditWithTx(r, tx, "risk_flag.delete", "risk_flag", id, before, map[string]bool{"deleted": true})
+		}
+		if err == nil {
+			err = tx.Commit()
+		}
+		if err != nil {
+			if errors.Is(err, storage.ErrRiskFlagNotFound) {
+				return notFound("risk flag not found")
+			}
+			return fmt.Errorf("failed to delete risk flag or write audit: %w", err)
+		}
+	} else if err := h.riskFlagStore.DeleteRiskFlag(id); err != nil {
 		if errors.Is(err, storage.ErrRiskFlagNotFound) {
 			return notFound("risk flag not found")
 		}
 		return fmt.Errorf("failed to delete risk flag: %w", err)
-	}
-	if err := h.recordAudit(r, "risk_flag.delete", "risk_flag", id, before, map[string]bool{"deleted": true}); err != nil {
-		return fmt.Errorf("failed to audit risk flag deletion: %w", err)
 	}
 
 	w.WriteHeader(http.StatusNoContent)
@@ -236,6 +263,9 @@ func (h *Handler) HandleTransitionRiskFlagStatus(w http.ResponseWriter, r *http.
 
 	if !riskflagentity.IsValidRiskFlagStatus(req.Status) {
 		return badRequest("invalid status: must be OPEN, IN_REVIEW, RESOLVED or FALSE_POSITIVE", nil)
+	}
+	if req.AssignedTo != nil && *req.AssignedTo <= 0 {
+		return badRequest("assigned_to must be a positive integer", nil)
 	}
 
 	// Récupérer le trader authentifié
@@ -267,7 +297,7 @@ func (h *Handler) HandleTransitionRiskFlagStatus(w http.ResponseWriter, r *http.
 		}
 	}
 	// Valider la transition
-	note := req.ResolutionNote
+	note := strings.TrimSpace(req.ResolutionNote)
 	if req.Status == string(riskflagentity.RiskFlagStatusResolved) || req.Status == string(riskflagentity.RiskFlagStatusFalsePositive) {
 		if strings.TrimSpace(note) == "" {
 			return badRequest("resolution_note is required for RESOLVED or FALSE_POSITIVE status", nil)
@@ -275,7 +305,23 @@ func (h *Handler) HandleTransitionRiskFlagStatus(w http.ResponseWriter, r *http.
 	}
 
 	// Effectuer la transition
-	updatedFlag, err := h.riskService.Investigation.TransitionRiskFlag(id, req.Status, traderID, note, req.AssignedTo)
+	var updatedFlag *riskflagentity.RiskFlag
+	var tx *sql.Tx
+	transactionalClose := beforeFlag != nil && h.auditLogger != nil
+	if transactionalClose {
+		store, ok := h.riskFlagStore.(transactionalRiskFlagStore)
+		if !ok {
+			return fmt.Errorf("risk flag repository does not support transactions")
+		}
+		tx, err = store.BeginTx()
+		if err != nil {
+			return fmt.Errorf("begin risk flag closure: %w", err)
+		}
+		defer tx.Rollback()
+		updatedFlag, err = h.riskService.Investigation.TransitionRiskFlagWithTx(tx, id, req.Status, traderID, note, req.AssignedTo)
+	} else {
+		updatedFlag, err = h.riskService.Investigation.TransitionRiskFlag(id, req.Status, traderID, note, req.AssignedTo)
+	}
 	if err != nil {
 		if errors.Is(err, storage.ErrRiskFlagNotFound) {
 			return notFound("risk flag not found")
@@ -292,7 +338,14 @@ func (h *Handler) HandleTransitionRiskFlagStatus(w http.ResponseWriter, r *http.
 		return fmt.Errorf("failed to transition risk flag: %w", err)
 	}
 	if beforeFlag != nil {
-		if err := h.recordAudit(r, "risk_flag.close", "risk_flag", id, beforeFlag, updatedFlag); err != nil {
+		if transactionalClose {
+			if err := h.recordAuditWithTx(r, tx, "risk_flag.close", "risk_flag", id, beforeFlag, updatedFlag); err != nil {
+				return fmt.Errorf("failed to audit risk flag closure: %w", err)
+			}
+			if err := tx.Commit(); err != nil {
+				return fmt.Errorf("commit risk flag closure: %w", err)
+			}
+		} else if err := h.recordAudit(r, "risk_flag.close", "risk_flag", id, beforeFlag, updatedFlag); err != nil {
 			return fmt.Errorf("failed to audit risk flag closure: %w", err)
 		}
 	}

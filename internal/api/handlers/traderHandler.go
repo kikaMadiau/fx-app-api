@@ -140,11 +140,29 @@ func (h *Handler) HandleCreateTrader(w http.ResponseWriter, r *http.Request) err
 	}
 
 	trader := &traderentity.Trader{Name: req.Name, FirstName: req.FirstName, LastName: req.LastName, Email: strings.TrimSpace(req.Email), Phone: req.Phone, Status: req.Status, Roles: role, PasswordHash: passwordHash, StoreId: req.StoreID, IsActive: true}
-	if err := h.traderStore.CreateTrader(trader); err != nil {
-		return fmt.Errorf("failed to create trader: %w", err)
-	}
-	if err := h.recordAudit(r, "trader.create", "trader", trader.Id, nil, traderResponse(trader)); err != nil {
-		return fmt.Errorf("failed to audit trader creation: %w", err)
+	if h.auditLogger != nil {
+		store, ok := h.traderStore.(transactionalTraderStore)
+		if !ok {
+			return fmt.Errorf("trader repository does not support transactions")
+		}
+		tx, err := store.BeginTx()
+		if err != nil {
+			return fmt.Errorf("begin trader creation: %w", err)
+		}
+		defer tx.Rollback()
+		if err := store.CreateTraderWithTx(tx, trader); err != nil {
+			return fmt.Errorf("failed to create trader: %w", err)
+		}
+		if err := h.recordAuditWithTx(r, tx, "trader.create", "trader", trader.Id, nil, traderResponse(trader)); err != nil {
+			return fmt.Errorf("failed to audit trader creation: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit trader creation: %w", err)
+		}
+	} else {
+		if err := h.traderStore.CreateTrader(trader); err != nil {
+			return fmt.Errorf("failed to create trader: %w", err)
+		}
 	}
 
 	return WriteJson(w, http.StatusCreated, traderResponse(trader))
@@ -221,16 +239,32 @@ func (h *Handler) HandleUpdateTrader(w http.ResponseWriter, r *http.Request) err
 		existingTrader.IsActive = *req.IsActive
 	}
 
-	if err := h.traderStore.UpdateTrader(existingTrader); err != nil {
+	var txErr error
+	if h.auditLogger != nil && (oldRole != existingTrader.Roles || oldActive != existingTrader.IsActive) {
+		store, ok := h.traderStore.(transactionalTraderStore)
+		if !ok {
+			return fmt.Errorf("trader repository does not support transactions")
+		}
+		tx, err := store.BeginTx()
+		if err != nil {
+			return fmt.Errorf("begin trader update: %w", err)
+		}
+		defer tx.Rollback()
+		txErr = store.UpdateTraderWithTx(tx, existingTrader)
+		if txErr == nil {
+			txErr = h.recordAuditWithTx(r, tx, "trader.access.update", "trader", id, before, traderResponse(existingTrader))
+		}
+		if txErr == nil {
+			txErr = tx.Commit()
+		}
+	} else {
+		txErr = h.traderStore.UpdateTrader(existingTrader)
+	}
+	if err := txErr; err != nil {
 		if errors.Is(err, storage.ErrLastActiveAdmin) {
 			return conflict("the last active administrator cannot be disabled or demoted")
 		}
 		return fmt.Errorf("failed to update trader: %w", err)
-	}
-	if oldRole != existingTrader.Roles || oldActive != existingTrader.IsActive {
-		if err := h.recordAudit(r, "trader.access.update", "trader", id, before, traderResponse(existingTrader)); err != nil {
-			return fmt.Errorf("failed to audit trader access update: %w", err)
-		}
 	}
 
 	return WriteJson(w, http.StatusOK, traderResponse(existingTrader))
@@ -258,16 +292,35 @@ func (h *Handler) HandleDeleteTrader(w http.ResponseWriter, r *http.Request) err
 			return conflict("the last active administrator cannot be deleted")
 		}
 	}
-	if err := h.traderStore.DeleteTrader(id); err != nil {
+	if h.auditLogger != nil {
+		store, ok := h.traderStore.(transactionalTraderStore)
+		if !ok {
+			return fmt.Errorf("trader repository does not support transactions")
+		}
+		tx, err := store.BeginTx()
+		if err != nil {
+			return fmt.Errorf("begin trader deletion: %w", err)
+		}
+		defer tx.Rollback()
+		err = store.DeleteTraderWithTx(tx, id)
+		if err == nil {
+			err = h.recordAuditWithTx(r, tx, "trader.delete", "trader", id, traderResponse(trader), map[string]bool{"deleted": true})
+		}
+		if err == nil {
+			err = tx.Commit()
+		}
+		if err != nil {
+			if errors.Is(err, storage.ErrLastActiveAdmin) {
+				return conflict("the last active administrator cannot be deleted")
+			}
+			return fmt.Errorf("failed to delete trader: %w", err)
+		}
+	} else if err := h.traderStore.DeleteTrader(id); err != nil {
 		if errors.Is(err, storage.ErrLastActiveAdmin) {
 			return conflict("the last active administrator cannot be deleted")
 		}
 		return fmt.Errorf("failed to delete trader: %w", err)
 	}
-	if err := h.recordAudit(r, "trader.delete", "trader", id, traderResponse(trader), map[string]bool{"deleted": true}); err != nil {
-		return fmt.Errorf("failed to audit trader deletion: %w", err)
-	}
-
 	w.WriteHeader(http.StatusNoContent)
 	return nil
 }
