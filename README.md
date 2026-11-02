@@ -66,7 +66,7 @@ Au demarrage, l'application:
 | `DB_USER` | utilisateur systeme courant | Utilisateur PostgreSQL. |
 | `DB_PASSWORD` | vide | Mot de passe PostgreSQL. |
 | `DB_NAME` | `forex_trader_kyc_db` | Nom de la base applicative. |
-| `DB_SSLMODE` | `disable` | Mode SSL PostgreSQL. |
+| `DB_SSLMODE` | `prefer` en local, `require` en production | Mode SSL PostgreSQL. En production, privilégier `verify-full`. |
 
 Exemple `.env`:
 
@@ -76,8 +76,10 @@ DB_PORT=5432
 DB_USER=postgres
 DB_PASSWORD=postgres
 DB_NAME=forex_trader_kyc_db
-DB_SSLMODE=disable
+DB_SSLMODE=prefer
 ```
+
+Pour la configuration des clés JWT, TLS PostgreSQL et les contrôles de sécurité, voir [SECURITY.md](SECURITY.md).
 
 ## Format Des Erreurs
 

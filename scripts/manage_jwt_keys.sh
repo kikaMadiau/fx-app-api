@@ -347,7 +347,7 @@ esac
 
 echo ""
 echo "Documentation:"
-echo "   - SECURITY_JWT_GUIDE.md pour les bonnes pratiques"
+echo "   - SECURITY.md pour les bonnes pratiques"
 echo "   - .env.example pour les configurations recommandées"
 echo ""
 echo "Rappel de sécurité:"
