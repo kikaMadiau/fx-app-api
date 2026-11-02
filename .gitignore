@@ -1,28 +1,47 @@
-.gocache/
-bin/
+# Local environment and secrets. Keep the documented template tracked.
 .env
-# Clés JWT et fichiers sensibles
+.env.*
+!.env.example
+.envrc
+
+# Private keys, certificates, and credentials
 *.pem
 *.key
+*.p12
+*.pfx
+*.jks
+*.keystore
 *.cert
+*.crt
+secrets/
 jwt/
+jwt_keys/
 temp_jwt_keys/
 
-# Fichiers de clés générés par le script
-jwt_keys/
+# Build output and local caches
+bin/
+dist/
+build/
+.gocache/
+*.test
+coverage.out
+coverage.html
 
-# Fichiers de développement temporaires
-.env.local
-.env.development
-.env.test
-
-# Logs
+# Logs, temporary files, and local databases/backups
 *.log
 logs/
-
-# IDE
-.vscode/
-.idea/
+*.tmp
 *.swp
 *.swo
 *~
+*.dump
+*.sql.gz
+*.sqlite
+*.sqlite3
+*.db
+
+# Editor and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
