@@ -102,7 +102,9 @@ func (s *RiskService) AnalyzeTransactionAndCustomer(tx *transactionentity.Transa
 // AnalyzeTransactionAndCustomerWithTx analyse la transaction avec une transaction SQL fournie.
 func (s *RiskService) AnalyzeTransactionAndCustomerWithTx(dbTx *sql.Tx, tx *transactionentity.Transaction) error {
 	// 1. Analyse de la transaction individuelle
-	customer, err := s.customerRepo.GetCustomer(tx.CustomerID)
+	// La création d'un nouveau client et de sa transaction n'est pas commitée à ce stade.
+	// Le lire via la même transaction SQL est nécessaire pour voir cette nouvelle ligne.
+	customer, err := s.customerRepo.GetCustomerWithTx(dbTx, tx.CustomerID)
 	if err != nil {
 		return fmt.Errorf("failed to get customer %d for risk analysis: %w", tx.CustomerID, err)
 	}

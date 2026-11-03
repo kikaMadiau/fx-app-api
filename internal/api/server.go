@@ -98,6 +98,7 @@ var protectedRouteDefinitions = []protectedRoute{
 	{http.MethodPut, "/traders/{id}", permissions.TraderManage, func(h *handlers.Handler) ApiFunc { return h.HandleUpdateTrader }},
 	{http.MethodDelete, "/traders/{id}", permissions.TraderManage, func(h *handlers.Handler) ApiFunc { return h.HandleDeleteTrader }},
 	{http.MethodPost, "/customers", permissions.CustomerCreate, func(h *handlers.Handler) ApiFunc { return h.HandleCreateCustomer }},
+	{http.MethodGet, "/customers", permissions.CustomerRead, func(h *handlers.Handler) ApiFunc { return h.HandleListCustomers }},
 	{http.MethodPost, "/customers/kyc", permissions.CustomerCreate, func(h *handlers.Handler) ApiFunc { return h.HandleCreateCustomerWithKYC }},
 	{http.MethodGet, "/customers/search", permissions.CustomerRead, func(h *handlers.Handler) ApiFunc { return h.HandleSearchCustomerByPhone }},
 	{http.MethodGet, "/customers/{id}", permissions.CustomerRead, func(h *handlers.Handler) ApiFunc { return h.HandleGetCustomer }},

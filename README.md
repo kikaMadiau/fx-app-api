@@ -46,6 +46,32 @@ go build -o bin/fx-app ./cmd
 ./bin/fx-app
 ```
 
+### Creer un utilisateur depuis le terminal
+
+Le binaire permet aussi de creer un utilisateur sans lancer le serveur. La commande
+lit sur stdin le même objet JSON que l'API:
+
+```bash
+go run ./cmd user create <<'JSON'
+{
+  "name": "Bureau Gombe",
+  "first_name": "Jean",
+  "last_name": "Kabila",
+  "email": "jeank@example.com",
+  "phone": "+243810000000",
+  "status": "ACTIVE",
+  "role": "TRADER",
+  "password": "secret-password",
+  "store_id": 2,
+  "is_active": true
+}
+JSON
+```
+
+Le mot de passe doit contenir entre 12 et 72 octets. Les rôles acceptés sont `TRADER`,
+`COMPLIANCE_OFFICER`, `SUPERVISOR` et `ADMIN`. La commande charge `.env`, initialise
+la table des utilisateurs si nécessaire, puis crée le compte avec le rôle et l'état indiqués.
+
 Au demarrage, l'application:
 
 1. charge `.env` si le fichier existe;
@@ -339,6 +365,8 @@ En-tête: `Authorization: Bearer <token>`, permission `analysis:read`. Aucun bod
 ```json
 [{"pair":"USD/CDF","buy_rate":2770,"sell_rate":2795,"change_rate":0.6}]
 ```
+
+Les taux affichés sont configurables dans le fichier `.env` du backend avec les variables `EXCHANGE_RATE_<DEVISE>_CDF_BUY`, `EXCHANGE_RATE_<DEVISE>_CDF_SELL` et `EXCHANGE_RATE_<DEVISE>_CDF_CHANGE` (ex. `EXCHANGE_RATE_USD_CDF_BUY=2770`). Les valeurs par défaut sont celles de l'exemple `.env.example`. Redémarrer l'API après une modification. Ces taux alimentent l'affichage des analyses ; le taux enregistré pour une transaction reste celui fourni lors de sa création.
 
 ### `GET /traders/{id}`
 

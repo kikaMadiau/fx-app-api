@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 
@@ -31,6 +32,7 @@ func (e *HTTPError) HTTPStatusCode() int {
 func MakeHttpHandleFunc(f ApiFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if err := f(w, r); err != nil {
+			log.Printf("API handler error: %s %s: %v", r.Method, r.URL.Path, err)
 			writeAPIError(w, err)
 		}
 	}

@@ -20,7 +20,7 @@ func TestPermissionMatrix(t *testing.T) {
 		RiskFlagDelete:      {Admin},
 		DashboardRead:       {Trader, ComplianceOfficer, Supervisor, Admin},
 		TraderManage:        {Admin},
-		AnalysisRead:        {ComplianceOfficer, Supervisor, Admin},
+		AnalysisRead:        {Trader, ComplianceOfficer, Supervisor, Admin},
 	}
 	for permission, allowedRoles := range matrix {
 		allowed := map[Role]bool{}

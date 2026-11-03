@@ -83,7 +83,7 @@ func TestProtectedRoutePermissionMatrix(t *testing.T) {
 	allowed := map[string][]permissions.Role{
 		permissions.ProfileRead:         {permissions.Trader, permissions.ComplianceOfficer, permissions.Supervisor, permissions.Admin},
 		permissions.DashboardRead:       {permissions.Trader, permissions.ComplianceOfficer, permissions.Supervisor, permissions.Admin},
-		permissions.AnalysisRead:        {permissions.ComplianceOfficer, permissions.Supervisor, permissions.Admin},
+		permissions.AnalysisRead:        {permissions.Trader, permissions.ComplianceOfficer, permissions.Supervisor, permissions.Admin},
 		permissions.TraderManage:        {permissions.Admin},
 		permissions.CustomerCreate:      {permissions.Trader, permissions.ComplianceOfficer, permissions.Supervisor, permissions.Admin},
 		permissions.CustomerRead:        {permissions.Trader, permissions.ComplianceOfficer, permissions.Supervisor, permissions.Admin},

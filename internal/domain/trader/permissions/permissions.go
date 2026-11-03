@@ -35,7 +35,7 @@ const (
 )
 
 var rolePermissions = map[Role]map[string]struct{}{
-	Trader:            set(ProfileRead, CustomerRead, CustomerCreate, CustomerUpdate, KYCRead, KYCUpdate, TransactionCreate, TransactionRead, RiskFlagCreate, RiskFlagRead, DashboardRead),
+	Trader:            set(ProfileRead, CustomerRead, CustomerCreate, CustomerUpdate, KYCRead, KYCUpdate, TransactionCreate, TransactionRead, RiskFlagCreate, RiskFlagRead, DashboardRead, AnalysisRead),
 	ComplianceOfficer: set(ProfileRead, CustomerRead, CustomerCreate, CustomerUpdate, KYCRead, KYCUpdate, KYCVerify, KYCReassess, TransactionCreate, TransactionRead, RiskFlagCreate, RiskFlagRead, RiskFlagInvestigate, DashboardRead, AnalysisRead),
 	Supervisor:        set(ProfileRead, CustomerRead, CustomerCreate, TransactionCreate, TransactionRead, RiskFlagCreate, RiskFlagRead, DashboardRead, AnalysisRead),
 	Admin:             set(ProfileRead, CustomerRead, CustomerCreate, CustomerUpdate, KYCRead, KYCUpdate, KYCReassess, TransactionCreate, TransactionRead, RiskFlagRead, RiskFlagDelete, DashboardRead, TraderManage, AnalysisRead),

@@ -53,6 +53,17 @@ var ValidIDTypes = []IDType{
 // Une valeur vide est acceptée (le type de pièce est optionnel) et renvoyée vide.
 func NormalizeIDType(value string) (string, error) {
 	normalized := strings.ToUpper(strings.TrimSpace(value))
+	// Accept the labels displayed by the French frontend as well as API enum values.
+	switch normalized {
+	case "CARTE D'IDENTITE", "CARTE D’IDENTITE", "CARTE D'IDENTITÉ", "CARTE D’IDENTITÉ":
+		normalized = string(IDTypeNationalID)
+	case "PASSEPORT":
+		normalized = string(IDTypePassport)
+	case "PERMIS DE CONDUIRE":
+		normalized = string(IDTypeDriverLicense)
+	case "CARTE D'ELECTEUR", "CARTE D’ELECTEUR", "CARTE D'ÉLECTEUR", "CARTE D’ÉLECTEUR":
+		normalized = string(IDTypeVoterCard)
+	}
 	if normalized == "" {
 		return "", nil
 	}

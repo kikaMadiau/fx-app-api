@@ -178,6 +178,9 @@ func (h *Handler) HandleListRiskFlags(w http.ResponseWriter, r *http.Request) er
 	if err != nil {
 		return fmt.Errorf("failed to list risk flags: %w", err)
 	}
+	if flags == nil {
+		flags = []*storage.RiskFlagWithDetails{}
+	}
 	return WriteJson(w, http.StatusOK, struct {
 		Items  any `json:"items"`
 		Total  int `json:"total"`
