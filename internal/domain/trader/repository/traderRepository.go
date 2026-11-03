@@ -126,13 +126,15 @@ func (r *TraderRepository) CreateTraderWithTx(tx *sql.Tx, trader *entity.Trader)
 // GetTrader récupère un cambiste par son ID.
 func (r *TraderRepository) GetTrader(id int) (*entity.Trader, error) {
 	query := `
-		SELECT id, COALESCE(name, ''), COALESCE(first_name, ''), COALESCE(last_name, ''),
-		       email, COALESCE(phone, ''), COALESCE(status, ''), COALESCE(role, ''),
-		       password_hash, COALESCE(store_id, 0), is_active, created_at, updated_at, deleted_at
-		FROM traders 
-		WHERE id = $1 AND deleted_at IS NULL`
+		SELECT t.id, COALESCE(t.name, ''), COALESCE(t.first_name, ''), COALESCE(t.last_name, ''),
+		       t.email, COALESCE(t.phone, ''), COALESCE(t.status, ''), COALESCE(array_to_string(t.roles, ','), ''),
+		       t.password_hash, COALESCE(t.store_id, 0), t.is_active, t.created_at, t.updated_at, t.deleted_at,
+		       t.is_platform_admin, t.must_change_password, s.id, COALESCE(s.name,''), COALESCE(s.bcc_license_number,''), COALESCE(s.status,''), s.license_expires_at
+		FROM traders t LEFT JOIN stores s ON s.id=t.store_id AND s.deleted_at IS NULL
+		WHERE t.id = $1 AND t.deleted_at IS NULL`
 
 	trader := &entity.Trader{}
+	trader.Store = &entity.Store{}
 
 	err := r.store.DB().QueryRow(query, id).Scan(
 		&trader.Id,
@@ -149,6 +151,13 @@ func (r *TraderRepository) GetTrader(id int) (*entity.Trader, error) {
 		&trader.CreatedAt,
 		&trader.UpdatedAt,
 		&trader.DeletedAt, // Le scan fonctionne directement avec *time.Time pour les colonnes nullables
+		&trader.IsPlatformAdmin,
+		&trader.MustChangePassword,
+		&trader.Store.ID,
+		&trader.Store.Name,
+		&trader.Store.BCCLicenseNumber,
+		&trader.Store.Status,
+		&trader.Store.LicenseExpiresAt,
 	)
 
 	if err != nil {
@@ -156,6 +165,9 @@ func (r *TraderRepository) GetTrader(id int) (*entity.Trader, error) {
 			return nil, fmt.Errorf("%w: id %d", storage.ErrTraderNotFound, id)
 		}
 		return nil, fmt.Errorf("failed to get trader: %w", err)
+	}
+	if trader.Store.ID == 0 {
+		trader.Store = nil
 	}
 
 	return trader, nil
@@ -189,13 +201,15 @@ func (r *TraderRepository) FindOrCreateTrader(trader *entity.Trader) (*entity.Tr
 // GetTraderByEmail récupère un cambiste par son email.
 func (r *TraderRepository) GetTraderByEmail(email string) (*entity.Trader, error) {
 	query := `
-		SELECT id, COALESCE(name, ''), COALESCE(first_name, ''), COALESCE(last_name, ''),
-		       email, COALESCE(phone, ''), COALESCE(status, ''), COALESCE(role, ''),
-		       password_hash, COALESCE(store_id, 0), is_active, created_at, updated_at, deleted_at
-		FROM traders 
-		WHERE email = $1 AND deleted_at IS NULL`
+		SELECT t.id, COALESCE(t.name, ''), COALESCE(t.first_name, ''), COALESCE(t.last_name, ''),
+		       t.email, COALESCE(t.phone, ''), COALESCE(t.status, ''), COALESCE(array_to_string(t.roles, ','), ''),
+		       t.password_hash, COALESCE(t.store_id, 0), t.is_active, t.created_at, t.updated_at, t.deleted_at,
+		       t.is_platform_admin, t.must_change_password, s.id, COALESCE(s.name,''), COALESCE(s.bcc_license_number,''), COALESCE(s.status,''), s.license_expires_at
+		FROM traders t LEFT JOIN stores s ON s.id=t.store_id AND s.deleted_at IS NULL
+		WHERE t.email = $1 AND t.deleted_at IS NULL`
 
 	trader := &entity.Trader{}
+	trader.Store = &entity.Store{}
 
 	err := r.store.DB().QueryRow(query, email).Scan(
 		&trader.Id,
@@ -212,6 +226,13 @@ func (r *TraderRepository) GetTraderByEmail(email string) (*entity.Trader, error
 		&trader.CreatedAt,
 		&trader.UpdatedAt,
 		&trader.DeletedAt,
+		&trader.IsPlatformAdmin,
+		&trader.MustChangePassword,
+		&trader.Store.ID,
+		&trader.Store.Name,
+		&trader.Store.BCCLicenseNumber,
+		&trader.Store.Status,
+		&trader.Store.LicenseExpiresAt,
 	)
 
 	if err != nil {
@@ -219,6 +240,9 @@ func (r *TraderRepository) GetTraderByEmail(email string) (*entity.Trader, error
 			return nil, fmt.Errorf("%w: email %s", storage.ErrTraderNotFound, email)
 		}
 		return nil, fmt.Errorf("failed to get trader by email: %w", err)
+	}
+	if trader.Store.ID == 0 {
+		trader.Store = nil
 	}
 
 	return trader, nil

@@ -25,20 +25,23 @@ type TraderLoginResponse struct {
 }
 
 type TraderResponse struct {
-	ID          int        `json:"id"`
-	Name        string     `json:"name"`
-	FirstName   string     `json:"first_name"`
-	LastName    string     `json:"last_name"`
-	Email       string     `json:"email"`
-	Phone       string     `json:"phone"`
-	Status      string     `json:"status"`
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
-	DeletedAt   *time.Time `json:"deleted_at"`
-	Role        string     `json:"role"`
-	StoreID     int        `json:"store_id"`
-	IsActive    bool       `json:"is_active"`
-	Permissions []string   `json:"permissions"`
+	ID              int                 `json:"id"`
+	Name            string              `json:"name"`
+	FirstName       string              `json:"first_name"`
+	LastName        string              `json:"last_name"`
+	Email           string              `json:"email"`
+	Phone           string              `json:"phone"`
+	Status          string              `json:"status"`
+	CreatedAt       time.Time           `json:"created_at"`
+	UpdatedAt       time.Time           `json:"updated_at"`
+	DeletedAt       *time.Time          `json:"deleted_at"`
+	Role            string              `json:"role"`
+	StoreID         int                 `json:"store_id"`
+	IsActive        bool                `json:"is_active"`
+	Permissions     []string            `json:"permissions"`
+	Roles           []string            `json:"roles"`
+	Store           *traderentity.Store `json:"store,omitempty"`
+	IsPlatformAdmin bool                `json:"is_platform_admin"`
 }
 
 type UpsertTraderRequest struct {
@@ -66,21 +69,28 @@ type CreateTraderRequest struct {
 }
 
 func traderResponse(trader *traderentity.Trader) TraderResponse {
+	perms := permissions.ForRole(trader.Roles)
+	if trader.IsPlatformAdmin {
+		perms = append(perms, permissions.PlatformManageStores, permissions.TraderManage)
+	}
 	return TraderResponse{
-		ID:          trader.Id,
-		Name:        trader.Name,
-		FirstName:   trader.FirstName,
-		LastName:    trader.LastName,
-		Email:       trader.Email,
-		Phone:       trader.Phone,
-		Status:      trader.Status,
-		CreatedAt:   trader.CreatedAt,
-		UpdatedAt:   trader.UpdatedAt,
-		DeletedAt:   trader.DeletedAt,
-		Role:        trader.Roles,
-		StoreID:     trader.StoreId,
-		IsActive:    trader.IsActive,
-		Permissions: permissions.ForRole(trader.Roles),
+		ID:              trader.Id,
+		Name:            trader.Name,
+		FirstName:       trader.FirstName,
+		LastName:        trader.LastName,
+		Email:           trader.Email,
+		Phone:           trader.Phone,
+		Status:          trader.Status,
+		CreatedAt:       trader.CreatedAt,
+		UpdatedAt:       trader.UpdatedAt,
+		DeletedAt:       trader.DeletedAt,
+		Role:            trader.Roles,
+		StoreID:         trader.StoreId,
+		IsActive:        trader.IsActive,
+		Permissions:     perms,
+		Roles:           traderauthservice.RoleList(trader),
+		Store:           trader.Store,
+		IsPlatformAdmin: trader.IsPlatformAdmin,
 	}
 }
 

@@ -81,23 +81,26 @@ func assertAPIErrorMessage(t *testing.T, response *httptest.ResponseRecorder, ex
 
 func TestProtectedRoutePermissionMatrix(t *testing.T) {
 	allowed := map[string][]permissions.Role{
-		permissions.ProfileRead:         {permissions.Trader, permissions.ComplianceOfficer, permissions.Supervisor, permissions.Admin},
-		permissions.DashboardRead:       {permissions.Trader, permissions.ComplianceOfficer, permissions.Supervisor, permissions.Admin},
-		permissions.AnalysisRead:        {permissions.Trader, permissions.ComplianceOfficer, permissions.Supervisor, permissions.Admin},
-		permissions.TraderManage:        {permissions.Admin},
-		permissions.CustomerCreate:      {permissions.Trader, permissions.ComplianceOfficer, permissions.Supervisor, permissions.Admin},
-		permissions.CustomerRead:        {permissions.Trader, permissions.ComplianceOfficer, permissions.Supervisor, permissions.Admin},
-		permissions.CustomerUpdate:      {permissions.Trader, permissions.ComplianceOfficer, permissions.Admin},
-		permissions.KYCRead:             {permissions.Trader, permissions.ComplianceOfficer, permissions.Admin},
-		permissions.KYCUpdate:           {permissions.Trader, permissions.ComplianceOfficer, permissions.Admin},
-		permissions.KYCVerify:           {permissions.ComplianceOfficer},
-		permissions.KYCReassess:         {permissions.ComplianceOfficer, permissions.Admin},
-		permissions.TransactionCreate:   {permissions.Trader, permissions.ComplianceOfficer, permissions.Supervisor, permissions.Admin},
-		permissions.TransactionRead:     {permissions.Trader, permissions.ComplianceOfficer, permissions.Supervisor, permissions.Admin},
-		permissions.RiskFlagCreate:      {permissions.Trader, permissions.ComplianceOfficer, permissions.Supervisor},
-		permissions.RiskFlagRead:        {permissions.Trader, permissions.ComplianceOfficer, permissions.Supervisor, permissions.Admin},
-		permissions.RiskFlagInvestigate: {permissions.ComplianceOfficer},
-		permissions.RiskFlagDelete:      {permissions.Admin},
+		permissions.ProfileRead:          {permissions.Trader, permissions.ComplianceOfficer, permissions.Supervisor, permissions.PlatformAdmin},
+		permissions.StoreRead:            {permissions.Trader, permissions.ComplianceOfficer, permissions.Supervisor},
+		permissions.StoreManageMembers:   {permissions.Supervisor},
+		permissions.PlatformManageStores: {permissions.PlatformAdmin},
+		permissions.DashboardRead:        {permissions.Trader, permissions.ComplianceOfficer, permissions.Supervisor},
+		permissions.AnalysisRead:         {permissions.Trader, permissions.ComplianceOfficer, permissions.Supervisor},
+		permissions.TraderManage:         {permissions.PlatformAdmin},
+		permissions.CustomerCreate:       {permissions.Trader, permissions.ComplianceOfficer, permissions.Supervisor},
+		permissions.CustomerRead:         {permissions.Trader, permissions.ComplianceOfficer, permissions.Supervisor},
+		permissions.CustomerUpdate:       {permissions.Trader, permissions.ComplianceOfficer},
+		permissions.KYCRead:              {permissions.Trader, permissions.ComplianceOfficer},
+		permissions.KYCUpdate:            {permissions.Trader, permissions.ComplianceOfficer},
+		permissions.KYCVerify:            {permissions.ComplianceOfficer},
+		permissions.KYCReassess:          {permissions.ComplianceOfficer},
+		permissions.TransactionCreate:    {permissions.Trader, permissions.ComplianceOfficer, permissions.Supervisor},
+		permissions.TransactionRead:      {permissions.Trader, permissions.ComplianceOfficer, permissions.Supervisor},
+		permissions.RiskFlagCreate:       {permissions.Trader, permissions.ComplianceOfficer, permissions.Supervisor},
+		permissions.RiskFlagRead:         {permissions.Trader, permissions.ComplianceOfficer, permissions.Supervisor},
+		permissions.RiskFlagInvestigate:  {permissions.ComplianceOfficer},
+		permissions.RiskFlagDelete:       {},
 	}
 	seen := map[string]bool{}
 	router := chi.NewRouter()
@@ -133,7 +136,7 @@ func TestProtectedRoutePermissionMatrix(t *testing.T) {
 			}
 			permissionHandler := middlewareInternal.RequirePermission(route.Permission)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
 			baseRequest := httptest.NewRequest(route.Method, route.Path, nil)
-			request := baseRequest.WithContext(traderservices.WithUser(baseRequest.Context(), &traderentity.Trader{Roles: string(role)}))
+			request := baseRequest.WithContext(traderservices.WithUser(baseRequest.Context(), &traderentity.Trader{Roles: string(role), Store: &traderentity.Store{Status: "ACTIVE"}}))
 			response := httptest.NewRecorder()
 			permissionHandler.ServeHTTP(response, request)
 			wantStatus := http.StatusForbidden

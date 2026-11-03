@@ -2,6 +2,14 @@ package entity
 
 import "time"
 
+type Store struct {
+	ID               int        `json:"id"`
+	Name             string     `json:"name"`
+	BCCLicenseNumber string     `json:"bcc_license_number"`
+	Status           string     `json:"status"`
+	LicenseExpiresAt *time.Time `json:"license_expires_at"`
+}
+
 type Trader struct {
 	Id           int        `json:"id"`
 	Name         string     `json:"name"`
@@ -18,5 +26,8 @@ type Trader struct {
 	//Store     Store  `json:"store"`
 	StoreId int `json:"store_id"`
 	//Location Locatin `json:"location"`
-	IsActive bool `json:"is_active"`
+	IsActive           bool   `json:"is_active"`
+	IsPlatformAdmin    bool   `json:"is_platform_admin"`
+	MustChangePassword bool   `json:"must_change_password,omitempty"`
+	Store              *Store `json:"store,omitempty"`
 }

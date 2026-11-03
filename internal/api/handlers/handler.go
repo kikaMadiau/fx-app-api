@@ -8,6 +8,7 @@ import (
 	customerservice "fx-app-api/internal/domain/customer/service"
 	dashboardrepository "fx-app-api/internal/domain/dashboard/repository"
 	riskservice "fx-app-api/internal/domain/riskflag/service"
+	storerepository "fx-app-api/internal/domain/store/repository"
 	traderentity "fx-app-api/internal/domain/trader/entity"
 	traderauthservice "fx-app-api/internal/domain/trader/traderservices"
 	"fx-app-api/internal/storage"
@@ -26,6 +27,11 @@ type Handler struct {
 	authService      *traderauthservice.AuthService
 	dashboardRepo    *dashboardrepository.DashboardRepository
 	auditLogger      AuditLogger
+	storeRepo        *storerepository.StoreRepository
+}
+
+func (h *Handler) SetStoreRepository(repository *storerepository.StoreRepository) {
+	h.storeRepo = repository
 }
 
 type AuditLogger interface {

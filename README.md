@@ -220,6 +220,45 @@ Toutes les autres routes exposees par `server.go` passent par la verification du
 | `PATCH` | `/risk-flags/{id}/status` | Affecter ou faire progresser une investigation d'alerte. |
 | `GET` | `/risk-flags/{id}/history` | Consulter l'historique des changements de statut. |
 
+## Stores et accès par rôle
+
+Le modèle `stores` représente les maisons de change. Un trader peut porter plusieurs rôles dans un store (`TRADER`, `COMPLIANCE_OFFICER`, `SUPERVISOR`). `PLATFORM_ADMIN` est un indicateur du compte, sans store. Les rôles et le statut actif du trader sont relus en base lors de chaque requête authentifiée ; les rôles présents dans le JWT ne servent pas à autoriser les routes.
+
+Au démarrage, la migration idempotente ajoute les stores et les colonnes `store_id`, `roles` et `is_platform_admin`. Les comptes et données historiques sont rattachés au store `Default`, créé avec l'agrément provisoire `MIGRATION-PENDING`. Les numéros d'agrément sont nettoyés (espaces retirés, majuscules) ; `BCC_LICENSE_PATTERN` peut contenir une expression régulière Go. Sans cette variable, tout numéro non vide est accepté.
+
+Routes de gestion des stores :
+
+| Méthode | Route | Permission |
+| --- | --- | --- |
+| `POST` | `/stores` | `PLATFORM_ADMIN` — crée le store et son premier superviseur dans une transaction SQL |
+| `GET` | `/stores` | `PLATFORM_ADMIN` |
+| `GET` | `/stores/{id}` | Membre du store concerné |
+| `PATCH` | `/stores/{id}` | `PLATFORM_ADMIN` — modification auditée |
+| `GET` | `/stores/{id}/members` | `SUPERVISOR` du store |
+| `POST` | `/stores/{id}/members` | `SUPERVISOR` du store — rattache un compte libre ou crée un compte avec mot de passe temporaire |
+| `PATCH` | `/stores/{id}/members/{traderId}` | `SUPERVISOR` du store — rôles et activation |
+
+Les rôles de store ne peuvent être que `TRADER`, `COMPLIANCE_OFFICER` et `SUPERVISOR`. Un superviseur ne peut pas retirer le dernier rôle `SUPERVISOR` actif du store. Les modifications de store et de membres sont consignées dans `audit_log`. `GET /auth/me` retourne les rôles, permissions et informations du store du trader.
+
+Exemple de création :
+
+```json
+{
+  "name": "Maison de change Centre",
+  "bcc_license_number": "BCC-12345",
+  "license_issued_at": "2026-01-01T00:00:00Z",
+  "license_expires_at": "2027-01-01T00:00:00Z",
+  "supervisor": {
+    "name": "Amina",
+    "email": "amina@example.com"
+  }
+}
+```
+
+Une création de transaction ou modification de client/KYC est refusée avec `403` et le code `store_license_invalid` lorsque le store est suspendu, fermé ou que son agrément a expiré. Les lectures ne sont pas bloquées par ce contrôle.
+
+> **Limite actuelle :** la migration ajoute `store_id` aux tables métier et rattache les données existantes, mais les repositories clients, transactions et alertes ne filtrent pas encore systématiquement leurs lectures et écritures par le store authentifié. L'isolation complète entre stores n'est donc pas encore garantie.
+
 ## RBAC (permissions par rôle)
 
 Chaque route métier exige un JWT valide et la permission indiquée. Les rôles inconnus sont refusés. `401` indique un jeton absent/invalide; `403` indique une permission insuffisante. Les `TRADER` ne peuvent consulter que leurs transactions et leur périmètre du tableau de bord. La création d'une transaction est toujours rattachée au trader authentifié.

@@ -4,23 +4,23 @@ import "testing"
 
 func TestPermissionMatrix(t *testing.T) {
 	matrix := map[string][]Role{
-		ProfileRead:         {Trader, ComplianceOfficer, Supervisor, Admin},
-		CustomerRead:        {Trader, ComplianceOfficer, Supervisor, Admin},
-		CustomerCreate:      {Trader, ComplianceOfficer, Supervisor, Admin},
-		CustomerUpdate:      {Trader, ComplianceOfficer, Admin},
-		KYCRead:             {Trader, ComplianceOfficer, Admin},
-		KYCUpdate:           {Trader, ComplianceOfficer, Admin},
+		ProfileRead:         {Trader, ComplianceOfficer, Supervisor, PlatformAdmin},
+		CustomerRead:        {Trader, ComplianceOfficer, Supervisor},
+		CustomerCreate:      {Trader, ComplianceOfficer, Supervisor},
+		CustomerUpdate:      {Trader, ComplianceOfficer},
+		KYCRead:             {Trader, ComplianceOfficer},
+		KYCUpdate:           {Trader, ComplianceOfficer},
 		KYCVerify:           {ComplianceOfficer},
-		KYCReassess:         {ComplianceOfficer, Admin},
-		TransactionCreate:   {Trader, ComplianceOfficer, Supervisor, Admin},
-		TransactionRead:     {Trader, ComplianceOfficer, Supervisor, Admin},
+		KYCReassess:         {ComplianceOfficer},
+		TransactionCreate:   {Trader, ComplianceOfficer, Supervisor},
+		TransactionRead:     {Trader, ComplianceOfficer, Supervisor},
 		RiskFlagCreate:      {Trader, ComplianceOfficer, Supervisor},
-		RiskFlagRead:        {Trader, ComplianceOfficer, Supervisor, Admin},
+		RiskFlagRead:        {Trader, ComplianceOfficer, Supervisor},
 		RiskFlagInvestigate: {ComplianceOfficer},
-		RiskFlagDelete:      {Admin},
-		DashboardRead:       {Trader, ComplianceOfficer, Supervisor, Admin},
-		TraderManage:        {Admin},
-		AnalysisRead:        {Trader, ComplianceOfficer, Supervisor, Admin},
+		RiskFlagDelete:      {},
+		DashboardRead:       {Trader, ComplianceOfficer, Supervisor},
+		TraderManage:        {PlatformAdmin},
+		AnalysisRead:        {Trader, ComplianceOfficer, Supervisor},
 	}
 	for permission, allowedRoles := range matrix {
 		allowed := map[Role]bool{}

@@ -8,6 +8,7 @@ import (
 	customerservice "fx-app-api/internal/domain/customer/service"
 	dashboardrepository "fx-app-api/internal/domain/dashboard/repository"
 	riskservice "fx-app-api/internal/domain/riskflag/service"
+	storerepository "fx-app-api/internal/domain/store/repository"
 	"fx-app-api/internal/domain/trader/permissions"
 	"fx-app-api/internal/storage"
 	"log"
@@ -91,6 +92,13 @@ type protectedRoute struct {
 
 var protectedRouteDefinitions = []protectedRoute{
 	{http.MethodGet, "/auth/me", permissions.ProfileRead, func(h *handlers.Handler) ApiFunc { return h.HandleGetCurrentTrader }},
+	{http.MethodPost, "/stores", permissions.PlatformManageStores, func(h *handlers.Handler) ApiFunc { return h.HandleCreateStore }},
+	{http.MethodGet, "/stores", permissions.PlatformManageStores, func(h *handlers.Handler) ApiFunc { return h.HandleListStores }},
+	{http.MethodGet, "/stores/{id}", permissions.StoreRead, func(h *handlers.Handler) ApiFunc { return h.HandleGetStore }},
+	{http.MethodPatch, "/stores/{id}", permissions.PlatformManageStores, func(h *handlers.Handler) ApiFunc { return h.HandleUpdateStore }},
+	{http.MethodGet, "/stores/{id}/members", permissions.StoreManageMembers, func(h *handlers.Handler) ApiFunc { return h.HandleListStoreMembers }},
+	{http.MethodPost, "/stores/{id}/members", permissions.StoreManageMembers, func(h *handlers.Handler) ApiFunc { return h.HandleAddStoreMember }},
+	{http.MethodPatch, "/stores/{id}/members/{traderId}", permissions.StoreManageMembers, func(h *handlers.Handler) ApiFunc { return h.HandleUpdateStoreMember }},
 	{http.MethodGet, "/dashboard/summary", permissions.DashboardRead, func(h *handlers.Handler) ApiFunc { return h.HandleDashboardSummary }},
 	{http.MethodGet, "/analysais", permissions.AnalysisRead, func(h *handlers.Handler) ApiFunc { return h.HandleListAnalysais }},
 	{http.MethodPost, "/traders", permissions.TraderManage, func(h *handlers.Handler) ApiFunc { return h.HandleCreateTrader }},
@@ -227,6 +235,7 @@ func NewServer(
 		server.handlers.SetDashboardRepository(dashboardrepository.NewDashboardRepository(provider.Store()))
 		server.auditRepo = auditrepository.NewAuditRepository(provider.Store())
 		server.handlers.SetAuditLogger(server.auditRepo)
+		server.handlers.SetStoreRepository(storerepository.New(provider.Store().DB()))
 	}
 
 	// Configurer le rate limiting global

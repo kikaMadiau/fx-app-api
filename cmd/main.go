@@ -81,6 +81,9 @@ func main() {
 	if err := transactionRepo.Init(); err != nil {
 		log.Fatalf("Failed to initialize transaction repository: %v", err)
 	}
+	if err := storage.InitTenantSchema(store.DB()); err != nil {
+		log.Fatalf("Failed to initialize tenant schema: %v", err)
+	}
 
 	// Initialiser les services métier
 	customerService := customerservice.NewCustomerServiceWithKYC(customerRepo, kycProfileRepo)

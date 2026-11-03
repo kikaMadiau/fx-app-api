@@ -1,8 +1,10 @@
 package middlewareInternal
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
 
 	traderentity "fx-app-api/internal/domain/trader/entity"
 	"fx-app-api/internal/domain/trader/permissions"
@@ -67,8 +69,14 @@ func RequirePermission(requiredPermission string) func(http.Handler) http.Handle
 				return
 			}
 
-			if !permissions.Has(user.Roles, requiredPermission) {
+			if !(user.IsPlatformAdmin && requiredPermission == permissions.PlatformManageStores) && !permissions.Has(user.Roles, requiredPermission) {
 				http.Error(w, `{"message": "Permissions insuffisantes"}`, http.StatusForbidden)
+				return
+			}
+			if requiresValidStoreLicense(requiredPermission) && !user.IsPlatformAdmin && invalidStoreLicense(user.Store, time.Now()) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusForbidden)
+				_ = json.NewEncoder(w).Encode(map[string]string{"code": "store_license_invalid", "message": "store license is not valid"})
 				return
 			}
 
@@ -77,49 +85,18 @@ func RequirePermission(requiredPermission string) func(http.Handler) http.Handle
 	}
 }
 
-/*
-func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		// 1. Extraire l'en-tête Authorization
-		authHeader := r.Header.Get("Authorization")
-		if authHeader == "" {
-			http.Error(w, `{"message": "Jeton manquant"}`, http.StatusUnauthorized)
-			return
-		}
-
-		// 2. Vérifier le format "Bearer <token>"
-		parts := strings.Split(authHeader, " ")
-		if len(parts) != 2 || parts[0] != "Bearer" {
-			http.Error(w, `{"message": "Format de jeton invalide"}`, http.StatusUnauthorized)
-			return
-		}
-		tokenString := parts[1]
-
-		// 3. Parser et valider le token
-		claims := &Claims{}
-		token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
-			// Valider la méthode de signature
-			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-				return nil, fmt.Errorf("méthode de signature inattendue : %v", token.Header["alg"])
-			}
-			return jwtSecret, nil
-		})
-
-		if err != nil || !token.Valid {
-			http.Error(w, `{"message": "Jeton invalide ou expiré"}`, http.StatusUnauthorized)
-			return
-		}
-
-		// 4. Créer l'objet utilisateur et l'injecter dans le contexte
-		currentUser := &User{
-			ID:    claims.UserID,
-			Roles: claims.Roles,
-		}
-
-		ctx := context.WithValue(r.Context(), UserContextKey, currentUser)
-
-		// 5. Continuer vers la route suivante avec le nouveau contexte
-		next(w, r.WithContext(ctx))
+func requiresValidStoreLicense(permission string) bool {
+	switch permission {
+	case permissions.CustomerCreate, permissions.CustomerUpdate, permissions.KYCUpdate, permissions.KYCVerify, permissions.TransactionCreate:
+		return true
+	default:
+		return false
 	}
 }
-*/
+
+func invalidStoreLicense(store *traderentity.Store, now time.Time) bool {
+	if store == nil || (store.Status != "ACTIVE" && store.Status != "") {
+		return true
+	}
+	return store.LicenseExpiresAt != nil && !store.LicenseExpiresAt.After(now)
+}
