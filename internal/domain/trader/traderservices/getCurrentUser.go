@@ -17,12 +17,41 @@ const storeContextKey contextKey = "store"
 func WithUser(ctx context.Context, user *traderentity.Trader) context.Context {
 	ctx = context.WithValue(ctx, userContextKey, user)
 	ctx = context.WithValue(ctx, storeContextKey, user.Store)
-	values := permissions.ForRole(user.Roles)
-	if user.IsPlatformAdmin {
-		values = append(values, permissions.PlatformManageStores, permissions.TraderManage)
-	}
-	return context.WithValue(ctx, permissionsContextKey, values)
+	return context.WithValue(ctx, permissionsContextKey, permissions.ForRole(EffectiveRoles(user)))
 }
+
+// EffectiveRoles : rôles de store du compte, plus PLATFORM_ADMIN pour l'administrateur de la
+// plateforme (indicateur du compte, sans store), pour appliquer la matrice des permissions.
+func EffectiveRoles(user *traderentity.Trader) string {
+	if user == nil {
+		return ""
+	}
+	if !user.IsPlatformAdmin {
+		return user.Roles
+	}
+	if strings.TrimSpace(user.Roles) == "" {
+		return string(permissions.PlatformAdmin)
+	}
+	return user.Roles + "," + string(permissions.PlatformAdmin)
+}
+
+// StoreScope : bureau dont le compte peut voir les données. 0 = tous les bureaux (administrateur
+// de la plateforme) ; -1 = aucun (compte sans bureau, qui ne doit rien voir).
+func StoreScope(user *traderentity.Trader) int {
+	switch {
+	case user == nil:
+		return -1
+	case user.IsPlatformAdmin:
+		return 0
+	case user.StoreId > 0:
+		return user.StoreId
+	default:
+		return -1
+	}
+}
+
+// RequestStoreScope : StoreScope du compte connecté.
+func RequestStoreScope(r *http.Request) int { return StoreScope(GetUser(r)) }
 
 func GetStore(r *http.Request) *traderentity.Store {
 	store, _ := r.Context().Value(storeContextKey).(*traderentity.Store)
@@ -36,7 +65,7 @@ func GetPermissions(r *http.Request) []string {
 
 func HasPermission(r *http.Request, permission string) bool {
 	user := GetUser(r)
-	return user != nil && ((user.IsPlatformAdmin && permission == permissions.PlatformManageStores) || permissions.Has(user.Roles, permission))
+	return user != nil && permissions.Has(EffectiveRoles(user), permission)
 }
 
 func RoleList(user *traderentity.Trader) []string {

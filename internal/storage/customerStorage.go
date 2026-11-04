@@ -11,6 +11,7 @@ type CustomerFilter struct {
 	Query     string // recherche partielle sur le nom, le téléphone et le numéro de pièce
 	KYCStatus string // statut KYC exact (UNVERIFIED, VERIFIED, ...)
 	RiskLevel string // niveau de risque exact (LOW, MEDIUM, HIGH, CRITICAL)
+	StoreID   int    // bureau de change : 0 = tous les bureaux
 	Limit     int
 	Offset    int
 }
@@ -34,7 +35,9 @@ type CustomerStorage interface {
 	// GetCustomerWithTx lit dans la transaction SQL fournie (nil : connexion normale) et voit donc
 	// un client créé plus tôt dans cette même transaction, pas encore commité.
 	GetCustomerWithTx(tx *sql.Tx, id int) (*entity.Customer, error)
-	GetCustomerByPhone(phone string) (*entity.Customer, error)
+	// GetCustomerByPhone cherche le client dans un bureau (storeID 0 : tous les bureaux) ;
+	// le même téléphone peut exister dans deux bureaux différents.
+	GetCustomerByPhone(phone string, storeID int) (*entity.Customer, error)
 	// ListCustomers renvoie une page de clients actifs et le nombre total de résultats.
 	ListCustomers(filter CustomerFilter) ([]*entity.CustomerSummary, int, error)
 }

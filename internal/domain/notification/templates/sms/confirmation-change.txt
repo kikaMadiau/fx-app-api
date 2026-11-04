@@ -1,0 +1,1 @@
+MOTUYA Fx.: Bonjour {{.Civility}} {{.ClientName}}, vous avez changé {{.AmountFrom}} {{.CurrencyFrom}} en {{.AmountTo}} {{.CurrencyTo}} au taux de {{.Rate}} auprès du cambiste {{.TraderName}}. Réf {{.Reference}}. Merci. Service BCC

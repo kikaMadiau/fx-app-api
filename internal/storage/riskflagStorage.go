@@ -23,6 +23,7 @@ type RiskFlagFilter struct {
 	TransactionID int
 	TraderID      int
 	CustomerID    int
+	StoreID       int // bureau de change : 0 = tous les bureaux
 	Status        string
 	Level         string
 	Query         string

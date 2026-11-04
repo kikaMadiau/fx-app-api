@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	riskflagentity "fx-app-api/internal/domain/riskflag/entity"
+	"fx-app-api/internal/domain/trader/permissions"
 	traderservices "fx-app-api/internal/domain/trader/traderservices"
 	"fx-app-api/internal/storage"
 	"net/http"
@@ -131,21 +132,20 @@ func (h *Handler) HandleCreateRiskFlag(w http.ResponseWriter, r *http.Request) e
 	if req.TraderID > 0 && req.TraderID != user.Id {
 		return &HTTPError{StatusCode: http.StatusForbidden, Message: "trader_id must match the authenticated trader"}
 	}
-	storeID, err := authenticatedStoreID(r)
-	if err != nil {
+	if err := h.requireInStore(r, "customers", req.CustomerID, "customer not found"); err != nil {
 		return err
 	}
-	if _, err := getCustomerInStore(h.customerStore, req.CustomerID, storeID); err != nil {
+	if _, err := h.customerStore.GetCustomer(req.CustomerID); err != nil {
 		if errors.Is(err, storage.ErrCustomerIDNotFound) {
 			return notFound("customer not found")
 		}
 		return fmt.Errorf("failed to check customer: %w", err)
 	}
 	if req.TransactionID != nil {
-		tx, err := getTransactionInStore(h.transactionStore, *req.TransactionID, storeID)
+		tx, err := h.transactionStore.GetTransaction(*req.TransactionID)
 		if err != nil {
 			if errors.Is(err, storage.ErrTransactionNotFound) {
-				return notFound("transaction not found")
+				return badRequest("transaction_id does not belong to customer", err)
 			}
 			return fmt.Errorf("failed to check transaction: %w", err)
 		}
@@ -162,7 +162,6 @@ func (h *Handler) HandleCreateRiskFlag(w http.ResponseWriter, r *http.Request) e
 		TransactionId: req.TransactionID,
 		TraderId:      user.Id,
 		CustomerId:    req.CustomerID,
-		StoreID:       storeID,
 	}
 
 	if err := h.riskFlagStore.CreateRiskFlag(flag); err != nil {
@@ -178,11 +177,12 @@ func (h *Handler) HandleListRiskFlags(w http.ResponseWriter, r *http.Request) er
 		return err
 	}
 
-	filter.Limit = boundedLimit(filter.Limit, 20, 100)
-	filter.StoreID, err = authenticatedStoreID(r)
-	if err != nil {
-		return err
+	// Comme pour les transactions, un trader ne voit que les alertes de ses propres opérations.
+	if user := traderservices.GetUser(r); user != nil && strings.EqualFold(user.Roles, string(permissions.Trader)) {
+		filter.TraderID = user.Id
 	}
+	filter.StoreID = traderservices.RequestStoreScope(r)
+	filter.Limit = boundedLimit(filter.Limit, 20, 100)
 	flags, total, err := h.riskFlagStore.ListRiskFlagsWithDetails(filter)
 	if err != nil {
 		return fmt.Errorf("failed to list risk flags: %w", err)
@@ -204,16 +204,15 @@ func (h *Handler) HandleGetRiskFlag(w http.ResponseWriter, r *http.Request) erro
 		return badRequest("invalid risk flag id", err)
 	}
 
-	storeID, err := authenticatedStoreID(r)
-	if err != nil {
-		return err
-	}
-	flag, err := getRiskFlagInStore(h.riskFlagStore, id, storeID)
+	flag, err := h.riskFlagStore.GetRiskFlag(id)
 	if err != nil {
 		if errors.Is(err, storage.ErrRiskFlagNotFound) {
 			return notFound("risk flag not found")
 		}
 		return fmt.Errorf("failed to get risk flag: %w", err)
+	}
+	if user := traderservices.GetUser(r); user != nil && strings.EqualFold(user.Roles, string(permissions.Trader)) && flag.TraderId != user.Id {
+		return notFound("risk flag not found")
 	}
 
 	return WriteJson(w, http.StatusOK, flag)
@@ -225,11 +224,7 @@ func (h *Handler) HandleDeleteRiskFlag(w http.ResponseWriter, r *http.Request) e
 		return badRequest("invalid risk flag id", err)
 	}
 
-	storeID, err := authenticatedStoreID(r)
-	if err != nil {
-		return err
-	}
-	before, err := getRiskFlagInStore(h.riskFlagStore, id, storeID)
+	before, err := h.riskFlagStore.GetRiskFlag(id)
 	if err != nil {
 		if errors.Is(err, storage.ErrRiskFlagNotFound) {
 			return notFound("risk flag not found")
@@ -246,11 +241,7 @@ func (h *Handler) HandleDeleteRiskFlag(w http.ResponseWriter, r *http.Request) e
 			return fmt.Errorf("begin risk flag deletion: %w", err)
 		}
 		defer tx.Rollback()
-		scoped, ok := h.riskFlagStore.(storage.ScopedRiskFlagStorage)
-		if !ok {
-			return fmt.Errorf("risk flag repository does not support store-scoped writes")
-		}
-		err = scoped.DeleteRiskFlagWithTxInStore(tx, id, storeID)
+		err = store.DeleteRiskFlagWithTx(tx, id)
 		if err == nil {
 			err = h.recordAuditWithTx(r, tx, "risk_flag.delete", "risk_flag", id, before, map[string]bool{"deleted": true})
 		}
@@ -263,15 +254,11 @@ func (h *Handler) HandleDeleteRiskFlag(w http.ResponseWriter, r *http.Request) e
 			}
 			return fmt.Errorf("failed to delete risk flag or write audit: %w", err)
 		}
-	} else if scoped, ok := h.riskFlagStore.(storage.ScopedRiskFlagStorage); ok {
-		if err := scoped.DeleteRiskFlagInStore(id, storeID); err != nil {
-			if errors.Is(err, storage.ErrRiskFlagNotFound) {
-				return notFound("risk flag not found")
-			}
-			return err
+	} else if err := h.riskFlagStore.DeleteRiskFlag(id); err != nil {
+		if errors.Is(err, storage.ErrRiskFlagNotFound) {
+			return notFound("risk flag not found")
 		}
-	} else {
-		return fmt.Errorf("risk flag repository does not support store-scoped writes")
+		return fmt.Errorf("failed to delete risk flag: %w", err)
 	}
 
 	w.WriteHeader(http.StatusNoContent)
@@ -304,13 +291,9 @@ func (h *Handler) HandleTransitionRiskFlagStatus(w http.ResponseWriter, r *http.
 
 	// Récupérer le trader_id de l'utilisateur
 	traderID := user.Id
-	storeID, storeErr := authenticatedStoreID(r)
-	if storeErr != nil {
-		return storeErr
-	}
 	var beforeFlag *riskflagentity.RiskFlag
 	if req.Status == string(riskflagentity.RiskFlagStatusResolved) || req.Status == string(riskflagentity.RiskFlagStatusFalsePositive) {
-		flag, err := getRiskFlagInStore(h.riskFlagStore, id, storeID)
+		flag, err := h.riskFlagStore.GetRiskFlag(id)
 		if err != nil {
 			if errors.Is(err, storage.ErrRiskFlagNotFound) {
 				return notFound("risk flag not found")
@@ -319,7 +302,7 @@ func (h *Handler) HandleTransitionRiskFlagStatus(w http.ResponseWriter, r *http.
 		}
 		beforeFlag = flag
 		if flag.TransactionId != nil {
-			transaction, err := getTransactionInStore(h.transactionStore, *flag.TransactionId, storeID)
+			transaction, err := h.transactionStore.GetTransaction(*flag.TransactionId)
 			if err != nil {
 				return fmt.Errorf("failed to get related transaction: %w", err)
 			}
@@ -350,9 +333,9 @@ func (h *Handler) HandleTransitionRiskFlagStatus(w http.ResponseWriter, r *http.
 			return fmt.Errorf("begin risk flag closure: %w", err)
 		}
 		defer tx.Rollback()
-		updatedFlag, err = h.riskService.Investigation.TransitionRiskFlagInStoreWithTx(tx, id, storeID, req.Status, traderID, note, req.AssignedTo)
+		updatedFlag, err = h.riskService.Investigation.TransitionRiskFlagWithTx(tx, id, req.Status, traderID, note, req.AssignedTo)
 	} else {
-		updatedFlag, err = h.riskService.Investigation.TransitionRiskFlagInStore(nil, id, storeID, req.Status, traderID, note, req.AssignedTo)
+		updatedFlag, err = h.riskService.Investigation.TransitionRiskFlag(id, req.Status, traderID, note, req.AssignedTo)
 	}
 	if err != nil {
 		if errors.Is(err, storage.ErrRiskFlagNotFound) {
@@ -391,27 +374,16 @@ func (h *Handler) HandleGetRiskFlagHistory(w http.ResponseWriter, r *http.Reques
 		return badRequest("invalid risk flag id", err)
 	}
 
-	storeID, err := authenticatedStoreID(r)
-	if err != nil {
-		return err
-	}
-	if _, err := getRiskFlagInStore(h.riskFlagStore, id, storeID); err != nil {
+	if _, err := h.riskFlagStore.GetRiskFlag(id); err != nil {
 		if errors.Is(err, storage.ErrRiskFlagNotFound) {
 			return notFound("risk flag not found")
 		}
 		return fmt.Errorf("failed to check risk flag: %w", err)
 	}
-	history, err := h.riskService.Investigation.GetStatusHistoryInStore(id, storeID)
+	history, err := h.riskService.Investigation.GetStatusHistory(id)
 	if err != nil {
 		return fmt.Errorf("failed to get status history: %w", err)
 	}
 
 	return WriteJson(w, http.StatusOK, history)
-}
-
-func getRiskFlagInStore(store storage.RiskFlagStorage, id, storeID int) (*riskflagentity.RiskFlag, error) {
-	if scoped, ok := store.(storage.ScopedRiskFlagStorage); ok {
-		return scoped.GetRiskFlagInStore(id, storeID)
-	}
-	return nil, storage.ErrRiskFlagNotFound
 }

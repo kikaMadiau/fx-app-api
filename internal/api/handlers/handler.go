@@ -5,11 +5,18 @@ import (
 	"encoding/json"
 	"fmt"
 	customerentity "fx-app-api/internal/domain/customer/entity"
+	"fx-app-api/internal/domain/customer/iddocument"
+	"fx-app-api/internal/domain/customer/kycrisk"
 	customerservice "fx-app-api/internal/domain/customer/service"
 	dashboardrepository "fx-app-api/internal/domain/dashboard/repository"
+	"fx-app-api/internal/domain/notification"
+	"fx-app-api/internal/domain/report"
 	riskservice "fx-app-api/internal/domain/riskflag/service"
 	storerepository "fx-app-api/internal/domain/store/repository"
 	traderentity "fx-app-api/internal/domain/trader/entity"
+	"fx-app-api/internal/domain/trader/passwordreset"
+	"fx-app-api/internal/domain/trader/profile"
+	"fx-app-api/internal/domain/trader/registration"
 	traderauthservice "fx-app-api/internal/domain/trader/traderservices"
 	"fx-app-api/internal/storage"
 	"net/http"
@@ -18,16 +25,25 @@ import (
 )
 
 type Handler struct {
-	traderStore      storage.TraderStorage
-	customerStore    storage.CustomerStorage
-	transactionStore storage.TransactionStorage
-	riskFlagStore    storage.RiskFlagStorage
-	riskService      *riskservice.RiskService
-	customerService  *customerservice.CustomerService
-	authService      *traderauthservice.AuthService
-	dashboardRepo    *dashboardrepository.DashboardRepository
-	auditLogger      AuditLogger
-	storeRepo        *storerepository.StoreRepository
+	traderStore       storage.TraderStorage
+	customerStore     storage.CustomerStorage
+	transactionStore  storage.TransactionStorage
+	riskFlagStore     storage.RiskFlagStorage
+	riskService       *riskservice.RiskService
+	customerService   *customerservice.CustomerService
+	authService       *traderauthservice.AuthService
+	dashboardRepo     *dashboardrepository.DashboardRepository
+	profileRepo       *profile.Repository
+	idDocumentRepo    *iddocument.Repository
+	reportRepo        *report.Repository
+	kycRiskRepo       *kycrisk.Repository
+	notificationRepo  *notification.Repository
+	notifier          *notification.Service
+	passwordResetRepo *passwordreset.Repository
+	registrationRepo  *registration.Repository
+	auditLogger       AuditLogger
+	storeRepo         *storerepository.StoreRepository
+	notifySettings    *notification.SettingsRepository
 }
 
 func (h *Handler) SetStoreRepository(repository *storerepository.StoreRepository) {

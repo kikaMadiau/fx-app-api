@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	customerentity "fx-app-api/internal/domain/customer/entity"
+	"fx-app-api/internal/domain/customer/kycrisk"
+	"fx-app-api/internal/domain/notification"
 	traderentity "fx-app-api/internal/domain/trader/entity"
 	"fx-app-api/internal/domain/trader/permissions"
 	traderservices "fx-app-api/internal/domain/trader/traderservices"
@@ -14,7 +16,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 )
 
 // --- Handlers de Transaction ---
@@ -51,14 +52,17 @@ type CreateTransactionPayload struct {
 }
 
 type CreateTransactionCustomerRequest struct {
-	FullName    string     `json:"full_name"`
-	FirstName   string     `json:"first_name"`
-	LastName    string     `json:"last_name"`
-	IDNumber    string     `json:"id_number"`
-	IDType      string     `json:"id_type"`
-	Phone       string     `json:"phone"`
-	Address     string     `json:"address"`
-	DateOfBirth *time.Time `json:"date_of_birth,omitempty"`
+	FullName  string `json:"full_name"`
+	FirstName string `json:"first_name"`
+	LastName  string `json:"last_name"`
+	IDNumber  string `json:"id_number"`
+	IDType    string `json:"id_type"`
+	Phone     string `json:"phone"`
+	Address   string `json:"address"`
+	// Date d'expiration de la pièce (AAAA-MM-JJ), conservée dans le dossier KYC.
+	IDExpiryDate string `json:"id_expiry_date"`
+	// E-mail facultatif, pour envoyer la confirmation de l'opération au client.
+	Email string `json:"email"`
 }
 
 // TransactionListResponse est la page de résultats renvoyée par GET /transactions.
@@ -100,12 +104,8 @@ func (h *Handler) HandleCreateTransaction(w http.ResponseWriter, r *http.Request
 		Status:          req.Status,
 		TraderID:        req.TraderID,
 		CustomerID:      req.CustomerID,
+		StoreID:         max(traderservices.StoreScope(trader), 0),
 	}
-	storeID, err := authenticatedStoreID(r)
-	if err != nil {
-		return err
-	}
-	tx.StoreID = storeID
 
 	var dbTx *sql.Tx
 	var errCreate error
@@ -119,7 +119,28 @@ func (h *Handler) HandleCreateTransaction(w http.ResponseWriter, r *http.Request
 		if err != nil {
 			return err
 		}
+		customer.StoreID = tx.StoreID
+		idExpiry := strings.TrimSpace(payload.Client.IDExpiryDate)
+		if idExpiry != "" && !kycrisk.ValidDate(idExpiry) {
+			return badRequest("client id_expiry_date must be a date YYYY-MM-DD", nil)
+		}
+		email, err := notification.NormalizeEmail(payload.Client.Email)
+		if err != nil {
+			return badRequest("client "+err.Error(), nil)
+		}
 		dbTx, errCreate = h.transactionStore.CreateTransactionWithNewCustomer(tx, customer)
+		if errCreate == nil && idExpiry != "" && h.customerService != nil {
+			if errCreate = h.customerService.SetIDExpiryDateWithTx(dbTx, tx.CustomerID, idExpiry); errCreate != nil {
+				_ = dbTx.Rollback()
+				dbTx = nil
+			}
+		}
+		if errCreate == nil && email != "" {
+			if errCreate = h.setCustomerEmail(dbTx, tx.CustomerID, email); errCreate != nil {
+				_ = dbTx.Rollback()
+				dbTx = nil
+			}
+		}
 	case strings.TrimSpace(payload.ClientPhone) != "":
 		if req.CustomerID > 0 {
 			return badRequest("provide either client_phone or customer_id, not both", nil)
@@ -131,6 +152,9 @@ func (h *Handler) HandleCreateTransaction(w http.ResponseWriter, r *http.Request
 	default:
 		if req.CustomerID <= 0 {
 			return badRequest("customer_id, client_phone, or client is required", nil)
+		}
+		if err := h.requireInStore(r, "customers", req.CustomerID, "customer not found"); err != nil {
+			return err
 		}
 		// La transaction de change est insérée DANS la transaction SQL : si l'analyse AML échoue,
 		// le rollback l'annule aussi.
@@ -151,6 +175,11 @@ func (h *Handler) HandleCreateTransaction(w http.ResponseWriter, r *http.Request
 		defer func() { _ = dbTx.Rollback() }()
 	}
 
+	// Blocages KYC (pièce absente ou expirée, client à risque élevé) : le rollback annule l'opération.
+	if err := h.enforceKYCGate(r, dbTx, tx); err != nil {
+		return err
+	}
+
 	// Analyse AML dans la même transaction SQL
 	// TODO: appliquer une éventuelle décision de mise en PENDING selon le niveau de risque.
 	if err := h.riskService.AnalyzeTransactionAndCustomerWithTx(dbTx, tx); err != nil {
@@ -163,6 +192,8 @@ func (h *Handler) HandleCreateTransaction(w http.ResponseWriter, r *http.Request
 			return fmt.Errorf("failed to commit transaction: %w", err)
 		}
 	}
+	// Confirmation par SMS et e-mail au client (mode test : fichiers dans outbox/).
+	h.notifyTransaction(tx.ID)
 
 	return WriteJson(w, http.StatusCreated, tx)
 }
@@ -176,10 +207,6 @@ func (h *Handler) HandleListTransactions(w http.ResponseWriter, r *http.Request)
 		return err
 	}
 	filter = scopeTransactionFilter(filter, traderservices.GetUser(r))
-	filter.StoreID, err = authenticatedStoreID(r)
-	if err != nil {
-		return err
-	}
 
 	items, total, err := h.transactionStore.SearchTransactions(filter)
 	if err != nil {
@@ -200,11 +227,7 @@ func (h *Handler) HandleGetTransaction(w http.ResponseWriter, r *http.Request) e
 		return badRequest("invalid transaction id", err)
 	}
 
-	storeID, storeErr := authenticatedStoreID(r)
-	if storeErr != nil {
-		return storeErr
-	}
-	tx, err := getTransactionInStore(h.transactionStore, id, storeID)
+	tx, err := h.transactionStore.GetTransaction(id)
 	if err != nil {
 		return transactionWriteError(err, "get transaction")
 	}
@@ -215,25 +238,15 @@ func (h *Handler) HandleGetTransaction(w http.ResponseWriter, r *http.Request) e
 	return WriteJson(w, http.StatusOK, tx)
 }
 
-func getTransactionInStore(store storage.TransactionStorage, id, storeID int) (*transactionentity.Transaction, error) {
-	if scoped, ok := store.(storage.ScopedTransactionStorage); ok {
-		return scoped.GetTransactionInStore(id, storeID)
-	}
-	return nil, storage.ErrTransactionNotFound
-}
-
 func scopeTransactionFilter(filter storage.TransactionFilter, user *traderentity.Trader) storage.TransactionFilter {
-	if user != nil && !canReadWholeStoreTransactions(user) {
+	if user != nil && strings.EqualFold(user.Roles, string(permissions.Trader)) {
 		filter.TraderID = user.Id
 	}
+	filter.StoreID = traderservices.StoreScope(user)
 	return filter
 }
 func canReadTransaction(tx *transactionentity.Transaction, user *traderentity.Trader) bool {
-	return tx != nil && (user == nil || canReadWholeStoreTransactions(user) || tx.TraderID == user.Id)
-}
-
-func canReadWholeStoreTransactions(user *traderentity.Trader) bool {
-	return containsRole(traderservices.RoleList(user), string(permissions.ComplianceOfficer)) || containsRole(traderservices.RoleList(user), string(permissions.Supervisor))
+	return tx != nil && (user == nil || !strings.EqualFold(user.Roles, string(permissions.Trader)) || tx.TraderID == user.Id)
 }
 
 // validateTransactionRequest nettoie et valide les champs de la transaction (devises, type, statut)
@@ -342,8 +355,6 @@ func transactionFilterFromQuery(r *http.Request) (storage.TransactionFilter, err
 // explicites (404, 409, 400). Toute autre erreur reste une 500.
 func transactionWriteError(err error, action string) error {
 	switch {
-	case errors.Is(err, storage.ErrIdentityConflict):
-		return &HTTPError{StatusCode: http.StatusConflict, Code: "identity_conflict", Message: "phone is already associated with a different identity"}
 	case errors.Is(err, storage.ErrCustomerPhoneExists):
 		return conflict("customer with this phone already exists")
 	case errors.Is(err, storage.ErrCustomerIDNumberExists):
@@ -376,6 +387,9 @@ func customerFromTransactionRequest(req CreateTransactionCustomerRequest) (*cust
 	}
 
 	idNumber := strings.TrimSpace(req.IDNumber)
+	if idNumber == "" {
+		idNumber = normalizedPhone
+	}
 
 	idType, err := customerentity.NormalizeIDType(req.IDType)
 	if err != nil {
@@ -383,12 +397,11 @@ func customerFromTransactionRequest(req CreateTransactionCustomerRequest) (*cust
 	}
 
 	return &customerentity.Customer{
-		FullName:    fullName,
-		IDNumber:    idNumber,
-		IDType:      idType,
-		Phone:       normalizedPhone,
-		Address:     req.Address,
-		DateOfBirth: req.DateOfBirth,
+		FullName: fullName,
+		IDNumber: idNumber,
+		IDType:   idType,
+		Phone:    normalizedPhone,
+		Address:  req.Address,
 	}, nil
 }
 

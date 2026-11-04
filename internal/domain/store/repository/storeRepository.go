@@ -162,8 +162,13 @@ func (r *StoreRepository) AddMember(storeID, actorID int, member *traderentity.T
 	created := false
 	var id int
 	var existingStore sql.NullInt64
-	err = tx.QueryRow(`SELECT id,store_id FROM traders WHERE email=$1 AND deleted_at IS NULL FOR UPDATE`, member.Email).Scan(&id, &existingStore)
+	var platformAdmin bool
+	err = tx.QueryRow(`SELECT id,store_id,COALESCE(is_platform_admin,FALSE) FROM traders WHERE email=$1 AND deleted_at IS NULL FOR UPDATE`, member.Email).Scan(&id, &existingStore, &platformAdmin)
 	if err == nil {
+		// Un administrateur de la plateforme n'appartient à aucun bureau : on ne le rattache jamais.
+		if platformAdmin {
+			return false, ErrMemberInOtherStore
+		}
 		if existingStore.Valid {
 			if int(existingStore.Int64) != storeID {
 				return false, ErrMemberInOtherStore
@@ -215,10 +220,35 @@ func (r *StoreRepository) UpdateMember(storeID, actorID, traderID int, roles []s
 			return ErrLastSupervisor
 		}
 	}
-	if _, err = tx.Exec(`UPDATE traders SET roles=$1,role=$2,is_active=$3,updated_at=CURRENT_TIMESTAMP WHERE id=$4 AND store_id=$5`, pq.Array(roles), firstRole(strings.Join(roles, ",")), active, traderID, storeID); err != nil {
+	if _, err = tx.Exec(`UPDATE traders SET roles=$1,role=$2,is_active=$3,status=CASE WHEN $3 AND status='PENDING' THEN 'ACTIVE' ELSE status END,updated_at=CURRENT_TIMESTAMP WHERE id=$4 AND store_id=$5`, pq.Array(roles), firstRole(strings.Join(roles, ",")), active, traderID, storeID); err != nil {
 		return err
 	}
 	if err = audit(tx, storeID, actorID, "member.update", "trader", traderID, before, map[string]any{"roles": roles, "is_active": active}); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// RejectPending refuse une inscription en attente : le compte est supprimé (logiquement) et son
+// adresse e-mail libérée pour une nouvelle demande. Un compte déjà accepté n'est pas concerné.
+func (r *StoreRepository) RejectPending(storeID, actorID, traderID int) error {
+	tx, err := r.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var email string
+	err = tx.QueryRow(`SELECT email FROM traders WHERE id=$1 AND store_id=$2 AND status='PENDING' AND is_active=FALSE AND deleted_at IS NULL FOR UPDATE`, traderID, storeID).Scan(&email)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrStoreNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if _, err = tx.Exec(`UPDATE traders SET status='REJECTED',deleted_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP,email='refuse-'||id||'-'||email WHERE id=$1`, traderID); err != nil {
+		return err
+	}
+	if err = audit(tx, storeID, actorID, "member.reject", "trader", traderID, map[string]any{"email": email, "status": "PENDING"}, map[string]any{"status": "REJECTED"}); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -255,4 +285,21 @@ func nullJSON(b []byte) any {
 		return nil
 	}
 	return string(b)
+}
+
+// storeOwnedTables : tables métier rattachées à un bureau, consultables par OwnerStore.
+var storeOwnedTables = map[string]bool{"customers": true, "transactions": true, "risk_flags": true}
+
+// OwnerStore renvoie le bureau d'une ligne (client, transaction, alerte), ou ErrStoreNotFound
+// si la ligne n'existe pas.
+func (r *StoreRepository) OwnerStore(table string, id int) (int, error) {
+	if !storeOwnedTables[table] {
+		return 0, fmt.Errorf("table %q is not store-owned", table)
+	}
+	var storeID int
+	err := r.db.QueryRow(`SELECT store_id FROM `+table+` WHERE id=$1`, id).Scan(&storeID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrStoreNotFound
+	}
+	return storeID, err
 }

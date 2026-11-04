@@ -2,7 +2,6 @@ package middlewareInternal
 
 import (
 	"encoding/json"
-	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -50,6 +49,11 @@ func AuthMiddleware(traderRepo storage.TraderStorage) func(http.Handler) http.Ha
 				http.Error(w, `{"message": "Utilisateur du jeton non trouvé"}`, http.StatusUnauthorized)
 				return
 			}
+			// Mot de passe changé depuis la connexion : la session n'est plus valable.
+			if claims.PasswordFingerprint != "" && claims.PasswordFingerprint != services.PasswordFingerprint(currentUser.PasswordHash) {
+				http.Error(w, `{"message": "Session expirée, reconnectez-vous"}`, http.StatusUnauthorized)
+				return
+			}
 
 			ctx := traderservices.WithUser(r.Context(), currentUser)
 
@@ -70,8 +74,7 @@ func RequirePermission(requiredPermission string) func(http.Handler) http.Handle
 				return
 			}
 
-			if !(user.IsPlatformAdmin && requiredPermission == permissions.PlatformManageStores) && !permissions.Has(user.Roles, requiredPermission) {
-				log.Printf("permission denied: trader_id=%d roles=%q required_permission=%q method=%s path=%s", user.Id, user.Roles, requiredPermission, r.Method, r.URL.Path)
+			if !permissions.Has(traderservices.EffectiveRoles(user), requiredPermission) {
 				http.Error(w, `{"message": "Permissions insuffisantes"}`, http.StatusForbidden)
 				return
 			}
@@ -89,7 +92,7 @@ func RequirePermission(requiredPermission string) func(http.Handler) http.Handle
 
 func requiresValidStoreLicense(permission string) bool {
 	switch permission {
-	case permissions.CustomerCreate, permissions.CustomerUpdate, permissions.KYCUpdate, permissions.KYCVerify, permissions.KYCReassess, permissions.TransactionCreate:
+	case permissions.CustomerCreate, permissions.CustomerUpdate, permissions.KYCUpdate, permissions.KYCVerify, permissions.TransactionCreate:
 		return true
 	default:
 		return false

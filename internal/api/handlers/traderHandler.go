@@ -15,6 +15,14 @@ import (
 type TraderLoginRequest struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
+	// OTPCode : code de l'application d'authentification (ou code de secours) si la 2FA est active.
+	OTPCode string `json:"otp_code"`
+}
+
+// TwoFactorChallengeResponse indique que le mot de passe est correct mais qu'un code est attendu.
+type TwoFactorChallengeResponse struct {
+	TwoFactorRequired bool   `json:"two_factor_required"`
+	Message           string `json:"message"`
 }
 
 type TraderLoginResponse struct {
@@ -66,9 +74,11 @@ type CreateTraderRequest struct {
 }
 
 func traderResponse(trader *traderentity.Trader) TraderResponse {
-	perms := permissions.ForRole(trader.Roles)
-	if trader.IsPlatformAdmin {
-		perms = append(perms, permissions.PlatformManageStores, permissions.TraderManage)
+	perms := permissions.ForRole(traderauthservice.EffectiveRoles(trader))
+	// L'interface affiche « Administrateur » pour ADMIN : l'admin plateforme n'a pas de rôle de store.
+	role := trader.Roles
+	if trader.IsPlatformAdmin && strings.TrimSpace(role) == "" {
+		role = string(permissions.Admin)
 	}
 	return TraderResponse{
 		ID:              trader.Id,
@@ -80,7 +90,7 @@ func traderResponse(trader *traderentity.Trader) TraderResponse {
 		CreatedAt:       trader.CreatedAt,
 		UpdatedAt:       trader.UpdatedAt,
 		DeletedAt:       trader.DeletedAt,
-		Role:            trader.Roles,
+		Role:            role,
 		StoreID:         trader.StoreId,
 		IsActive:        trader.IsActive,
 		Permissions:     perms,
@@ -105,8 +115,37 @@ func (h *Handler) HandleTraderLogin(w http.ResponseWriter, r *http.Request) erro
 	}
 
 	result, err := h.authService.AuthenticateTrader(req.Email, req.Password)
+	if errors.Is(err, traderauthservice.ErrAccountPending) {
+		return &HTTPError{StatusCode: http.StatusForbidden, Message: "account pending approval"}
+	}
 	if err != nil {
 		return &HTTPError{StatusCode: http.StatusUnauthorized, Message: err.Error()}
+	}
+
+	if h.profileRepo != nil {
+		enabled, err := h.profileRepo.TwoFactorEnabled(result.Trader.Id)
+		if err != nil {
+			return fmt.Errorf("check two-factor: %w", err)
+		}
+		if enabled {
+			// Mot de passe correct : on ne délivre le jeton qu'avec un code valide.
+			if strings.TrimSpace(req.OTPCode) == "" {
+				return WriteJson(w, http.StatusOK, TwoFactorChallengeResponse{
+					TwoFactorRequired: true,
+					Message:           "two-factor code required",
+				})
+			}
+			ok, _, err := h.profileRepo.VerifySecondFactor(result.Trader.Id, req.OTPCode, time.Now())
+			if err != nil {
+				return fmt.Errorf("verify two-factor: %w", err)
+			}
+			if !ok {
+				return &HTTPError{StatusCode: http.StatusUnauthorized, Message: "invalid two-factor code"}
+			}
+		}
+		if err := h.profileRepo.RecordLogin(result.Trader.Id, r.UserAgent()); err != nil {
+			return fmt.Errorf("record login: %w", err)
+		}
 	}
 
 	return WriteJson(w, http.StatusOK, TraderLoginResponse{

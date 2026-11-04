@@ -5,11 +5,18 @@ import (
 	"fx-app-api/internal/api/handlers"
 	"fx-app-api/internal/api/middlewareInternal"
 	auditrepository "fx-app-api/internal/domain/audit/repository"
+	"fx-app-api/internal/domain/customer/iddocument"
+	"fx-app-api/internal/domain/customer/kycrisk"
 	customerservice "fx-app-api/internal/domain/customer/service"
 	dashboardrepository "fx-app-api/internal/domain/dashboard/repository"
+	"fx-app-api/internal/domain/notification"
+	"fx-app-api/internal/domain/report"
 	riskservice "fx-app-api/internal/domain/riskflag/service"
 	storerepository "fx-app-api/internal/domain/store/repository"
+	"fx-app-api/internal/domain/trader/passwordreset"
 	"fx-app-api/internal/domain/trader/permissions"
+	"fx-app-api/internal/domain/trader/profile"
+	"fx-app-api/internal/domain/trader/registration"
 	"fx-app-api/internal/storage"
 	"log"
 	"net"
@@ -27,12 +34,18 @@ import (
 )
 
 type ApiServer struct {
-	listenAddr   string
-	handlers     *handlers.Handler
-	traderRepo   storage.TraderStorage
-	rateLimiter  *middlewareInternal.RateLimiter
-	loginMonitor *LoginMonitor
-	auditRepo    *auditrepository.AuditRepository
+	listenAddr        string
+	handlers          *handlers.Handler
+	traderRepo        storage.TraderStorage
+	rateLimiter       *middlewareInternal.RateLimiter
+	loginMonitor      *LoginMonitor
+	auditRepo         *auditrepository.AuditRepository
+	profileRepo       *profile.Repository
+	idDocRepo         *iddocument.Repository
+	kycRiskRepo       *kycrisk.Repository
+	notificationRepo  *notification.Repository
+	notifySettings    *notification.SettingsRepository
+	passwordResetRepo *passwordreset.Repository
 }
 
 func (s *ApiServer) Start() error {
@@ -41,11 +54,42 @@ func (s *ApiServer) Start() error {
 			return err
 		}
 	}
+	if s.profileRepo != nil {
+		if err := s.profileRepo.Init(); err != nil {
+			return err
+		}
+	}
+	if s.idDocRepo != nil {
+		if err := s.idDocRepo.Init(); err != nil {
+			return err
+		}
+	}
+	if s.passwordResetRepo != nil {
+		if err := s.passwordResetRepo.Init(); err != nil {
+			return err
+		}
+	}
+	if s.notifySettings != nil {
+		if err := s.notifySettings.Init(); err != nil {
+			return err
+		}
+	}
+	if s.notificationRepo != nil {
+		if err := s.notificationRepo.Init(); err != nil {
+			return err
+		}
+	}
+	if s.kycRiskRepo != nil {
+		if err := s.kycRiskRepo.Init(); err != nil {
+			return err
+		}
+	}
 	h := s.handlers
 
 	router := chi.NewRouter()
 
 	// Middleware de sécurité de base
+	router.Use(middlewareInternal.SecurityHeaders)
 	router.Use(middlewareInternal.CorsMiddleware)
 	router.Use(middleware.CleanPath)
 	router.Use(middleware.Logger)    // Ajout d'un logger pour les requêtes
@@ -64,6 +108,11 @@ func (s *ApiServer) Start() error {
 			r.Use(s.loginMonitor.RateLimitMiddleware())
 		}
 		r.Post("/auth/trader/login", MakeHttpHandleFunc(h.HandleTraderLogin))
+		// Mot de passe oublié : mêmes limites que la connexion.
+		r.Post("/auth/password/forgot", MakeHttpHandleFunc(h.HandleForgotPassword))
+		r.Post("/auth/password/reset", MakeHttpHandleFunc(h.HandleResetPassword))
+		// Créer un compte : seulement avec un numéro d'agrément BCC valable.
+		r.Post("/auth/register", MakeHttpHandleFunc(h.HandleRegister))
 	})
 
 	router.Group(func(r chi.Router) {
@@ -99,6 +148,28 @@ var protectedRouteDefinitions = []protectedRoute{
 	{http.MethodGet, "/stores/{id}/members", permissions.StoreManageMembers, func(h *handlers.Handler) ApiFunc { return h.HandleListStoreMembers }},
 	{http.MethodPost, "/stores/{id}/members", permissions.StoreManageMembers, func(h *handlers.Handler) ApiFunc { return h.HandleAddStoreMember }},
 	{http.MethodPatch, "/stores/{id}/members/{traderId}", permissions.StoreManageMembers, func(h *handlers.Handler) ApiFunc { return h.HandleUpdateStoreMember }},
+	{http.MethodDelete, "/stores/{id}/members/{traderId}", permissions.StoreManageMembers, func(h *handlers.Handler) ApiFunc { return h.HandleRejectStoreMember }},
+	{http.MethodGet, "/auth/me/profile", permissions.ProfileRead, func(h *handlers.Handler) ApiFunc { return h.HandleGetProfile }},
+	{http.MethodPut, "/auth/me/profile", permissions.ProfileUpdate, func(h *handlers.Handler) ApiFunc { return h.HandleUpdateProfile }},
+	{http.MethodGet, "/auth/me/photo", permissions.ProfileRead, func(h *handlers.Handler) ApiFunc { return h.HandleGetProfilePhoto }},
+	{http.MethodPut, "/auth/me/photo", permissions.ProfileUpdate, func(h *handlers.Handler) ApiFunc { return h.HandleUploadProfilePhoto }},
+	{http.MethodDelete, "/auth/me/photo", permissions.ProfileUpdate, func(h *handlers.Handler) ApiFunc { return h.HandleDeleteProfilePhoto }},
+	{http.MethodPut, "/auth/me/location", permissions.ProfileUpdate, func(h *handlers.Handler) ApiFunc { return h.HandleUpdateLocation }},
+	{http.MethodDelete, "/auth/me/location", permissions.ProfileUpdate, func(h *handlers.Handler) ApiFunc { return h.HandleStopLocation }},
+	// Administrateur de la plateforme : annuaire du personnel et réglages d'envoi (Twilio, SMTP).
+	{http.MethodGet, "/staff", permissions.PlatformManageStores, func(h *handlers.Handler) ApiFunc { return h.HandleListStaff }},
+	{http.MethodGet, "/staff/{id}/photo", permissions.PlatformManageStores, func(h *handlers.Handler) ApiFunc { return h.HandleGetStaffPhoto }},
+	{http.MethodGet, "/admin/notification-settings", permissions.PlatformManageStores, func(h *handlers.Handler) ApiFunc { return h.HandleGetNotificationSettings }},
+	{http.MethodPut, "/admin/notification-settings", permissions.PlatformManageStores, func(h *handlers.Handler) ApiFunc { return h.HandleUpdateNotificationSettings }},
+	{http.MethodPost, "/admin/notification-settings/test", permissions.PlatformManageStores, func(h *handlers.Handler) ApiFunc { return h.HandleTestNotification }},
+	{http.MethodPut, "/auth/me/notifications", permissions.ProfileUpdate, func(h *handlers.Handler) ApiFunc { return h.HandleUpdateNotifications }},
+	{http.MethodPost, "/auth/me/2fa/setup", permissions.ProfileUpdate, func(h *handlers.Handler) ApiFunc { return h.HandleStartTwoFactorSetup }},
+	{http.MethodPost, "/auth/me/2fa/enable", permissions.ProfileUpdate, func(h *handlers.Handler) ApiFunc { return h.HandleConfirmTwoFactorSetup }},
+	{http.MethodPost, "/auth/me/2fa/disable", permissions.ProfileUpdate, func(h *handlers.Handler) ApiFunc { return h.HandleDisableTwoFactor }},
+	{http.MethodPut, "/auth/me/preferences", permissions.ProfileUpdate, func(h *handlers.Handler) ApiFunc { return h.HandleUpdatePreferences }},
+	{http.MethodPost, "/auth/me/password", permissions.ProfileUpdate, func(h *handlers.Handler) ApiFunc { return h.HandleChangePassword }},
+	{http.MethodGet, "/reports/activity", permissions.DashboardRead, func(h *handlers.Handler) ApiFunc { return h.HandleActivityReport }},
+	{http.MethodGet, "/reports/compliance", permissions.DashboardRead, func(h *handlers.Handler) ApiFunc { return h.HandleComplianceReport }},
 	{http.MethodGet, "/dashboard/summary", permissions.DashboardRead, func(h *handlers.Handler) ApiFunc { return h.HandleDashboardSummary }},
 	{http.MethodGet, "/analysais", permissions.AnalysisRead, func(h *handlers.Handler) ApiFunc { return h.HandleListAnalysais }},
 	{http.MethodPost, "/traders", permissions.TraderManage, func(h *handlers.Handler) ApiFunc { return h.HandleCreateTrader }},
@@ -109,6 +180,12 @@ var protectedRouteDefinitions = []protectedRoute{
 	{http.MethodGet, "/customers", permissions.CustomerRead, func(h *handlers.Handler) ApiFunc { return h.HandleListCustomers }},
 	{http.MethodPost, "/customers/kyc", permissions.CustomerCreate, func(h *handlers.Handler) ApiFunc { return h.HandleCreateCustomerWithKYC }},
 	{http.MethodGet, "/customers/search", permissions.CustomerRead, func(h *handlers.Handler) ApiFunc { return h.HandleSearchCustomerByPhone }},
+	{http.MethodGet, "/customers/{id}/id-document", permissions.CustomerRead, func(h *handlers.Handler) ApiFunc { return h.HandleGetIDDocumentStatus }},
+	{http.MethodGet, "/customers/{id}/id-document/{side}", permissions.CustomerRead, func(h *handlers.Handler) ApiFunc { return h.HandleGetIDDocument }},
+	{http.MethodPut, "/customers/{id}/id-document/{side}", permissions.CustomerCreate, func(h *handlers.Handler) ApiFunc { return h.HandleUploadIDDocument }},
+	{http.MethodGet, "/customers/{id}/kyc-risk", permissions.CustomerRead, func(h *handlers.Handler) ApiFunc { return h.HandleGetKYCRisk }},
+	{http.MethodPost, "/customers/{id}/kyc-override", permissions.KYCVerify, func(h *handlers.Handler) ApiFunc { return h.HandleGrantKYCOverride }},
+	{http.MethodPatch, "/customers/{id}/identity", permissions.CustomerCreate, func(h *handlers.Handler) ApiFunc { return h.HandleUpdateCustomerIdentity }},
 	{http.MethodGet, "/customers/{id}", permissions.CustomerRead, func(h *handlers.Handler) ApiFunc { return h.HandleGetCustomer }},
 	{http.MethodPut, "/customers/{id}", permissions.CustomerUpdate, func(h *handlers.Handler) ApiFunc { return h.HandleUpdateCustomer }},
 	{http.MethodGet, "/customers/{id}/kyc", permissions.KYCRead, func(h *handlers.Handler) ApiFunc { return h.HandleGetKYCProfile }},
@@ -117,6 +194,7 @@ var protectedRouteDefinitions = []protectedRoute{
 	{http.MethodPost, "/customers/{id}/kyc/reassess", permissions.KYCReassess, func(h *handlers.Handler) ApiFunc { return h.HandleTriggerKYCReassessment }},
 	{http.MethodPost, "/transactions", permissions.TransactionCreate, func(h *handlers.Handler) ApiFunc { return h.HandleCreateTransaction }},
 	{http.MethodGet, "/transactions/{id}", permissions.TransactionRead, func(h *handlers.Handler) ApiFunc { return h.HandleGetTransaction }},
+	{http.MethodGet, "/transactions/{id}/notifications", permissions.TransactionRead, func(h *handlers.Handler) ApiFunc { return h.HandleListTransactionNotifications }},
 	{http.MethodGet, "/transactions", permissions.TransactionRead, func(h *handlers.Handler) ApiFunc { return h.HandleListTransactions }},
 	{http.MethodPost, "/risk-flags", permissions.RiskFlagCreate, func(h *handlers.Handler) ApiFunc { return h.HandleCreateRiskFlag }},
 	{http.MethodGet, "/risk-flags", permissions.RiskFlagRead, func(h *handlers.Handler) ApiFunc { return h.HandleListRiskFlags }},
@@ -128,9 +206,28 @@ var protectedRouteDefinitions = []protectedRoute{
 
 func registerProtectedRoutes(router chi.Router, h *handlers.Handler) {
 	for _, route := range protectedRouteDefinitions {
-		wrapped := middlewareInternal.RequirePermission(route.Permission)(MakeHttpHandleFunc(route.Handler(h)))
+		var handler http.Handler = MakeHttpHandleFunc(route.Handler(h))
+		if table, message, ok := storeOwnedRoute(route.Path); ok {
+			handler = h.StoreGuard(table, message)(handler)
+		}
+		wrapped := middlewareInternal.RequirePermission(route.Permission)(handler)
 		router.Method(route.Method, route.Path, wrapped)
 	}
+}
+
+// storeOwnedRoute : routes /customers/{id}, /transactions/{id} et /risk-flags/{id} (et leurs
+// sous-routes), dont la ligne doit appartenir au bureau du compte connecté.
+func storeOwnedRoute(path string) (table, notFoundMessage string, ok bool) {
+	for prefix, t := range map[string][2]string{
+		"/customers/{id}":    {"customers", "customer not found"},
+		"/transactions/{id}": {"transactions", "transaction not found"},
+		"/risk-flags/{id}":   {"risk_flags", "risk flag not found"},
+	} {
+		if path == prefix || strings.HasPrefix(path, prefix+"/") {
+			return t[0], t[1], true
+		}
+	}
+	return "", "", false
 }
 
 type ApiFunc func(http.ResponseWriter, *http.Request) error
@@ -238,6 +335,25 @@ func NewServer(
 		server.auditRepo = auditrepository.NewAuditRepository(provider.Store())
 		server.handlers.SetAuditLogger(server.auditRepo)
 		server.handlers.SetStoreRepository(storerepository.New(provider.Store().DB()))
+		server.profileRepo = profile.NewRepository(provider.Store())
+		server.handlers.SetProfileRepository(server.profileRepo)
+		server.idDocRepo = iddocument.NewRepository(provider.Store())
+		server.handlers.SetIDDocumentRepository(server.idDocRepo)
+		server.handlers.SetReportRepository(report.NewRepository(provider.Store()))
+		server.kycRiskRepo = kycrisk.NewRepository(provider.Store())
+		server.handlers.SetKYCRiskRepository(server.kycRiskRepo)
+		if riskService != nil {
+			riskService.SetSignalSource(server.kycRiskRepo)
+		}
+		server.passwordResetRepo = passwordreset.NewRepository(provider.Store())
+		server.handlers.SetPasswordResetRepository(server.passwordResetRepo)
+		server.handlers.SetRegistrationRepository(registration.NewRepository(provider.Store()))
+		server.notificationRepo = notification.NewRepository(provider.Store())
+		// Réglages Twilio/SMTP de l'administrateur : à brancher avant de créer l'envoi.
+		server.notifySettings = notification.NewSettingsRepository(provider.Store())
+		notification.UseSettings(server.notifySettings)
+		server.handlers.SetNotificationSettings(server.notifySettings)
+		server.handlers.SetNotifications(server.notificationRepo, notification.NewService(server.notificationRepo, notification.NewSenderFromEnv()))
 	}
 
 	// Configurer le rate limiting global
