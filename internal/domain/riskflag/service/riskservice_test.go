@@ -137,10 +137,10 @@ func TestDefaultRiskRulesMatchExpectedCatalog(t *testing.T) {
 	transactionRules := buildTransactionRules(defaults.TransactionRules)
 	customerRules := buildCustomerRules(defaults.CustomerRules)
 
-	if len(transactionRules) != 4 {
-		t.Fatalf("expected 4 default transaction rules, got %d", len(transactionRules))
+	if len(transactionRules) != 7 {
+		t.Fatalf("expected 7 default transaction rules, got %d", len(transactionRules))
 	}
-	if len(customerRules) != 4 {
-		t.Fatalf("expected 4 default customer rules, got %d", len(customerRules))
+	if len(customerRules) != 15 {
+		t.Fatalf("expected 15 default customer rules, got %d", len(customerRules))
 	}
 }

@@ -85,9 +85,9 @@ func (r *TraderRepository) CreateTraderWithTx(tx *sql.Tx, trader *entity.Trader)
 	trader.Roles = string(role)
 	query := `
 		INSERT INTO traders (
-			name, first_name, last_name, email, phone, status, role, password_hash, store_id, is_active, created_at, updated_at
+			name, first_name, last_name, email, phone, status, role, roles, password_hash, store_id, is_active, created_at, updated_at
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
+			$1, $2, $3, $4, $5, $6, $7::TEXT, ARRAY[$7::TEXT], $8, $9, $10, $11, $12
 		) RETURNING id, created_at, updated_at`
 
 	trader.CreatedAt = time.Now()
@@ -129,7 +129,7 @@ func (r *TraderRepository) GetTrader(id int) (*entity.Trader, error) {
 		SELECT t.id, COALESCE(t.name, ''), COALESCE(t.first_name, ''), COALESCE(t.last_name, ''),
 		       t.email, COALESCE(t.phone, ''), COALESCE(t.status, ''), COALESCE(array_to_string(t.roles, ','), ''),
 		       t.password_hash, COALESCE(t.store_id, 0), t.is_active, t.created_at, t.updated_at, t.deleted_at,
-		       t.is_platform_admin, t.must_change_password, s.id, COALESCE(s.name,''), COALESCE(s.bcc_license_number,''), COALESCE(s.status,''), s.license_expires_at
+		       t.is_platform_admin, t.must_change_password, COALESCE(s.id, 0), COALESCE(s.name,''), COALESCE(s.bcc_license_number,''), COALESCE(s.status,''), s.license_expires_at
 		FROM traders t LEFT JOIN stores s ON s.id=t.store_id AND s.deleted_at IS NULL
 		WHERE t.id = $1 AND t.deleted_at IS NULL`
 
@@ -204,7 +204,7 @@ func (r *TraderRepository) GetTraderByEmail(email string) (*entity.Trader, error
 		SELECT t.id, COALESCE(t.name, ''), COALESCE(t.first_name, ''), COALESCE(t.last_name, ''),
 		       t.email, COALESCE(t.phone, ''), COALESCE(t.status, ''), COALESCE(array_to_string(t.roles, ','), ''),
 		       t.password_hash, COALESCE(t.store_id, 0), t.is_active, t.created_at, t.updated_at, t.deleted_at,
-		       t.is_platform_admin, t.must_change_password, s.id, COALESCE(s.name,''), COALESCE(s.bcc_license_number,''), COALESCE(s.status,''), s.license_expires_at
+		       t.is_platform_admin, t.must_change_password, COALESCE(s.id, 0), COALESCE(s.name,''), COALESCE(s.bcc_license_number,''), COALESCE(s.status,''), s.license_expires_at
 		FROM traders t LEFT JOIN stores s ON s.id=t.store_id AND s.deleted_at IS NULL
 		WHERE t.email = $1 AND t.deleted_at IS NULL`
 

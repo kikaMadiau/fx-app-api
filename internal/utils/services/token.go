@@ -2,7 +2,9 @@ package services
 
 import (
 	"crypto/rsa"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -26,7 +28,16 @@ type Claims struct {
 	Email  string   `json:"email"`
 	Roles  []string `json:"roles"`
 	Status []string `json:"status"`
+	// Empreinte du mot de passe au moment de la connexion : un changement de mot de passe
+	// invalide les sessions ouvertes avant.
+	PasswordFingerprint string `json:"pwd,omitempty"`
 	jwt.RegisteredClaims
+}
+
+// PasswordFingerprint : empreinte courte du hachage du mot de passe (jamais le mot de passe).
+func PasswordFingerprint(passwordHash string) string {
+	sum := sha256.Sum256([]byte("fx-session:" + passwordHash))
+	return hex.EncodeToString(sum[:8])
 }
 
 // loadKeys loads RSA keys from multiple sources in order of priority:
@@ -148,6 +159,11 @@ func getKeyManager() (*KeyManager, error) {
 }
 
 func CreateToken(name string, email string, roles []string, status []string) (string, error) {
+	return CreateSessionToken(name, email, roles, status, "")
+}
+
+// CreateSessionToken : comme CreateToken, mais lié au mot de passe actuel du compte.
+func CreateSessionToken(name string, email string, roles []string, status []string, passwordHash string) (string, error) {
 	km, err := getKeyManager()
 	if err != nil {
 		return "", fmt.Errorf("failed to get key manager: %w", err)
@@ -160,7 +176,11 @@ func CreateToken(name string, email string, roles []string, status []string) (st
 		Status: status,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour * 24)),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
 		},
+	}
+	if passwordHash != "" {
+		claims.PasswordFingerprint = PasswordFingerprint(passwordHash)
 	}
 
 	return km.CreateTokenWithRotation(claims)

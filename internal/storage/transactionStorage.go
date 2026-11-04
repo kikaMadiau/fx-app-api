@@ -34,6 +34,7 @@ type TransactionStorage interface {
 type TransactionFilter struct {
 	CustomerID int
 	TraderID   int
+	StoreID    int // bureau de change : 0 = tous les bureaux
 	Since      time.Time
 
 	// Critères utilisés par SearchTransactions uniquement.

@@ -45,3 +45,6 @@ logs/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Notifications client en mode test (NOTIFY_MODE=test)
+outbox/

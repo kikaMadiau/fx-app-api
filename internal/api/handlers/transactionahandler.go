@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	customerentity "fx-app-api/internal/domain/customer/entity"
+	"fx-app-api/internal/domain/customer/kycrisk"
+	"fx-app-api/internal/domain/notification"
 	traderentity "fx-app-api/internal/domain/trader/entity"
 	"fx-app-api/internal/domain/trader/permissions"
 	traderservices "fx-app-api/internal/domain/trader/traderservices"
@@ -57,6 +59,10 @@ type CreateTransactionCustomerRequest struct {
 	IDType    string `json:"id_type"`
 	Phone     string `json:"phone"`
 	Address   string `json:"address"`
+	// Date d'expiration de la pièce (AAAA-MM-JJ), conservée dans le dossier KYC.
+	IDExpiryDate string `json:"id_expiry_date"`
+	// E-mail facultatif, pour envoyer la confirmation de l'opération au client.
+	Email string `json:"email"`
 }
 
 // TransactionListResponse est la page de résultats renvoyée par GET /transactions.
@@ -98,6 +104,7 @@ func (h *Handler) HandleCreateTransaction(w http.ResponseWriter, r *http.Request
 		Status:          req.Status,
 		TraderID:        req.TraderID,
 		CustomerID:      req.CustomerID,
+		StoreID:         max(traderservices.StoreScope(trader), 0),
 	}
 
 	var dbTx *sql.Tx
@@ -112,7 +119,28 @@ func (h *Handler) HandleCreateTransaction(w http.ResponseWriter, r *http.Request
 		if err != nil {
 			return err
 		}
+		customer.StoreID = tx.StoreID
+		idExpiry := strings.TrimSpace(payload.Client.IDExpiryDate)
+		if idExpiry != "" && !kycrisk.ValidDate(idExpiry) {
+			return badRequest("client id_expiry_date must be a date YYYY-MM-DD", nil)
+		}
+		email, err := notification.NormalizeEmail(payload.Client.Email)
+		if err != nil {
+			return badRequest("client "+err.Error(), nil)
+		}
 		dbTx, errCreate = h.transactionStore.CreateTransactionWithNewCustomer(tx, customer)
+		if errCreate == nil && idExpiry != "" && h.customerService != nil {
+			if errCreate = h.customerService.SetIDExpiryDateWithTx(dbTx, tx.CustomerID, idExpiry); errCreate != nil {
+				_ = dbTx.Rollback()
+				dbTx = nil
+			}
+		}
+		if errCreate == nil && email != "" {
+			if errCreate = h.setCustomerEmail(dbTx, tx.CustomerID, email); errCreate != nil {
+				_ = dbTx.Rollback()
+				dbTx = nil
+			}
+		}
 	case strings.TrimSpace(payload.ClientPhone) != "":
 		if req.CustomerID > 0 {
 			return badRequest("provide either client_phone or customer_id, not both", nil)
@@ -124,6 +152,9 @@ func (h *Handler) HandleCreateTransaction(w http.ResponseWriter, r *http.Request
 	default:
 		if req.CustomerID <= 0 {
 			return badRequest("customer_id, client_phone, or client is required", nil)
+		}
+		if err := h.requireInStore(r, "customers", req.CustomerID, "customer not found"); err != nil {
+			return err
 		}
 		// La transaction de change est insérée DANS la transaction SQL : si l'analyse AML échoue,
 		// le rollback l'annule aussi.
@@ -144,6 +175,11 @@ func (h *Handler) HandleCreateTransaction(w http.ResponseWriter, r *http.Request
 		defer func() { _ = dbTx.Rollback() }()
 	}
 
+	// Blocages KYC (pièce absente ou expirée, client à risque élevé) : le rollback annule l'opération.
+	if err := h.enforceKYCGate(r, dbTx, tx); err != nil {
+		return err
+	}
+
 	// Analyse AML dans la même transaction SQL
 	// TODO: appliquer une éventuelle décision de mise en PENDING selon le niveau de risque.
 	if err := h.riskService.AnalyzeTransactionAndCustomerWithTx(dbTx, tx); err != nil {
@@ -156,6 +192,8 @@ func (h *Handler) HandleCreateTransaction(w http.ResponseWriter, r *http.Request
 			return fmt.Errorf("failed to commit transaction: %w", err)
 		}
 	}
+	// Confirmation par SMS et e-mail au client (mode test : fichiers dans outbox/).
+	h.notifyTransaction(tx.ID)
 
 	return WriteJson(w, http.StatusCreated, tx)
 }
@@ -204,6 +242,7 @@ func scopeTransactionFilter(filter storage.TransactionFilter, user *traderentity
 	if user != nil && strings.EqualFold(user.Roles, string(permissions.Trader)) {
 		filter.TraderID = user.Id
 	}
+	filter.StoreID = traderservices.StoreScope(user)
 	return filter
 }
 func canReadTransaction(tx *transactionentity.Transaction, user *traderentity.Trader) bool {

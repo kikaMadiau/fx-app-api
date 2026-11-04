@@ -53,7 +53,7 @@ func (s *fakeCustomerStorage) GetCustomer(id int) (*entity.Customer, error) {
 	return cloneCustomer(customer), nil
 }
 
-func (s *fakeCustomerStorage) GetCustomerByPhone(phone string) (*entity.Customer, error) {
+func (s *fakeCustomerStorage) GetCustomerByPhone(phone string, storeID int) (*entity.Customer, error) {
 	for _, customer := range s.customers {
 		if customer.Phone == phone {
 			return cloneCustomer(customer), nil

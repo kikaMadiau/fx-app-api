@@ -22,6 +22,8 @@ type Transaction struct {
 	DeletedAt       *time.Time `json:"deleted_at,omitempty"` // Utilise un pointeur pour les timestamps nullables
 	TraderID        int        `json:"trader_id"`
 	CustomerID      int        `json:"customer_id"`
+	// Bureau de change de l'opération (celui du client).
+	StoreID int `json:"store_id,omitempty"`
 }
 
 // TransactionListItem est la vue « liste » d'une transaction : ses données de base

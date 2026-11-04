@@ -1,0 +1,1 @@
+MOTUYA Fx.: Bonjour {{.Civility}} {{.ClientName}}, votre dossier est incomplet. Veuillez enregistrer {{.MissingDocument}} lors de votre prochain change. Service BCC

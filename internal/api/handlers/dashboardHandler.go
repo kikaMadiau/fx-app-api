@@ -16,7 +16,7 @@ func (h *Handler) HandleDashboardSummary(w http.ResponseWriter, r *http.Request)
 	if user := traderservices.GetUser(r); user != nil && strings.EqualFold(user.Roles, string(permissions.Trader)) {
 		traderIDs = []int{user.Id}
 	}
-	summary, err := h.dashboardRepo.Summary(time.Now(), traderIDs...)
+	summary, err := h.dashboardRepo.Summary(time.Now(), traderservices.RequestStoreScope(r), traderIDs...)
 	if err != nil {
 		return err
 	}

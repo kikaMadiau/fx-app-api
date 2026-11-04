@@ -5,6 +5,7 @@ import (
 	"fmt"
 	customerentity "fx-app-api/internal/domain/customer/entity"
 	customerservice "fx-app-api/internal/domain/customer/service"
+	traderservices "fx-app-api/internal/domain/trader/traderservices"
 	"fx-app-api/internal/storage"
 	"net/http"
 	"strconv"
@@ -50,6 +51,7 @@ func (h *Handler) HandleCreateCustomer(w http.ResponseWriter, r *http.Request) e
 	}
 
 	customer := customerFromRequest(req)
+	customer.StoreID = max(traderservices.RequestStoreScope(r), 0)
 	if err := h.customerStore.CreateCustomer(customer); err != nil {
 		return customerWriteError(err, "create customer")
 	}
@@ -67,6 +69,7 @@ func (h *Handler) HandleCreateCustomerWithKYC(w http.ResponseWriter, r *http.Req
 	}
 
 	customer := customerFromRequest(req.Customer)
+	customer.StoreID = max(traderservices.RequestStoreScope(r), 0)
 	savedCustomer, created, err := h.customerService.CreateCustomerWithKYC(customer, &req.KYCProfile)
 	if err != nil {
 		return customerWriteError(err, "create customer with KYC")
@@ -91,6 +94,7 @@ func (h *Handler) HandleListCustomers(w http.ResponseWriter, r *http.Request) er
 		return err
 	}
 
+	filter.StoreID = traderservices.RequestStoreScope(r)
 	customers, total, err := h.customerStore.ListCustomers(filter)
 	if err != nil {
 		return fmt.Errorf("failed to list customers: %w", err)
@@ -116,7 +120,7 @@ func (h *Handler) HandleSearchCustomerByPhone(w http.ResponseWriter, r *http.Req
 		return badRequest("invalid phone", err)
 	}
 
-	customer, err := h.customerStore.GetCustomerByPhone(normalizedPhone)
+	customer, err := h.customerStore.GetCustomerByPhone(normalizedPhone, traderservices.RequestStoreScope(r))
 	if err != nil {
 		if errors.Is(err, storage.ErrCustomerNotFound) {
 			return notFound("no customer found with this phone")

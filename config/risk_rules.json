@@ -30,6 +30,31 @@
       "enabled": true,
       "threshold_count": 10,
       "window": "24h"
+    },
+    {
+      "type": "structuring",
+      "name": "STRUCTURING_BELOW_THRESHOLD",
+      "score": 40,
+      "enabled": true,
+      "threshold_amount": 10000,
+      "threshold_count": 3,
+      "margin": 0.2,
+      "window": "24h"
+    },
+    {
+      "type": "round_trip",
+      "name": "ROUND_TRIP_EXCHANGE",
+      "score": 30,
+      "enabled": true,
+      "window": "48h"
+    },
+    {
+      "type": "dormant_reactivation",
+      "name": "DORMANT_REACTIVATION",
+      "score": 20,
+      "enabled": true,
+      "threshold_amount": 5000,
+      "window": "4320h"
     }
   ],
   "customer_rules": [
@@ -56,6 +81,76 @@
       "name": "EXPECTED_VOLUME_EXCEEDED",
       "score": 30,
       "enabled": true
+    },
+    {
+      "type": "missing_id_document",
+      "name": "MISSING_ID_DOCUMENT",
+      "score": 40,
+      "enabled": true
+    },
+    {
+      "type": "missing_id_photo",
+      "name": "MISSING_ID_PHOTO",
+      "score": 15,
+      "enabled": true,
+      "alert": false
+    },
+    {
+      "type": "missing_phone",
+      "name": "MISSING_PHONE",
+      "score": 20,
+      "enabled": true
+    },
+    {
+      "type": "missing_address",
+      "name": "MISSING_ADDRESS",
+      "score": 5,
+      "enabled": true,
+      "alert": false
+    },
+    {
+      "type": "duplicate_id_number",
+      "name": "DUPLICATE_ID_NUMBER",
+      "score": 35,
+      "enabled": true
+    },
+    {
+      "type": "expired_id_document",
+      "name": "EXPIRED_ID_DOCUMENT",
+      "score": 45,
+      "enabled": true
+    },
+    {
+      "type": "politically_exposed",
+      "name": "POLITICALLY_EXPOSED_PERSON",
+      "score": 35,
+      "enabled": true
+    },
+    {
+      "type": "sensitive_sector",
+      "name": "SENSITIVE_SECTOR",
+      "score": 25,
+      "enabled": true
+    },
+    {
+      "type": "third_party",
+      "name": "ACTS_FOR_THIRD_PARTY",
+      "score": 30,
+      "enabled": true
+    },
+    {
+      "type": "foreign_or_non_resident",
+      "name": "FOREIGN_OR_NON_RESIDENT",
+      "score": 15,
+      "enabled": true,
+      "alert": false
+    },
+    {
+      "type": "kyc_review_due",
+      "name": "KYC_REVIEW_DUE",
+      "score": 20,
+      "enabled": true,
+      "alert": false
     }
   ]
 }

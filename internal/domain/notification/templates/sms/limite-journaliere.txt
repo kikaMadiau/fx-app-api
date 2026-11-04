@@ -1,0 +1,1 @@
+MOTUYA Fx.: Bonjour {{.Civility}} {{.ClientName}}, vous avez atteint votre limite de change du jour ({{.DailyLimit}} USD). Prochain change possible : {{.ResetAt}}. Service BCC

@@ -257,7 +257,7 @@ Exemple de création :
 
 Une création de transaction ou modification de client/KYC est refusée avec `403` et le code `store_license_invalid` lorsque le store est suspendu, fermé ou que son agrément a expiré. Les lectures ne sont pas bloquées par ce contrôle.
 
-> **Limite actuelle :** la migration ajoute `store_id` aux tables métier et rattache les données existantes, mais les repositories clients, transactions et alertes ne filtrent pas encore systématiquement leurs lectures et écritures par le store authentifié. L'isolation complète entre stores n'est donc pas encore garantie.
+> **Isolation entre stores :** chaque compte ne voit et ne modifie que les clients, transactions et alertes de son store (listes, recherche par telephone, tableau de bord, rapports). Les routes `/customers/{id}`, `/transactions/{id}` et `/risk-flags/{id}` repondent 404 pour une ligne d'un autre store (`StoreGuard`). Un meme telephone peut exister dans deux stores. L'administrateur de la plateforme voit tous les stores.
 
 ## RBAC (permissions par rôle)
 

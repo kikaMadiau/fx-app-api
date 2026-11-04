@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"fx-app-api/internal/domain/customer/entity"
+	"fx-app-api/internal/domain/customer/kycrisk"
 	"fx-app-api/internal/storage"
 	"log"
 	"strings"
@@ -86,6 +87,17 @@ type CustomerKYCProfile struct {
 	ExpectedVolume      float64 `json:"expected_volume"`    // Volume mensuel attendu
 	ExpectedFrequency   int     `json:"expected_frequency"` // Transactions par mois attendues
 
+	// Vigilance : pièce, nationalité, exposition politique, secteur, mandat
+	IDExpiryDate       string `json:"id_expiry_date,omitempty"`    // AAAA-MM-JJ
+	Nationality        string `json:"nationality,omitempty"`       // code pays ISO 3166 (CD = RDC)
+	ResidenceCountry   string `json:"residence_country,omitempty"` // code pays ISO 3166
+	IsPEP              bool   `json:"is_pep"`                      // personne politiquement exposée
+	PEPFunction        string `json:"pep_function,omitempty"`
+	ActivitySector     string `json:"activity_sector,omitempty"`
+	ActsForThirdParty  bool   `json:"acts_for_third_party"` // opère pour le compte d'un tiers
+	ThirdPartyName     string `json:"third_party_name,omitempty"`
+	ThirdPartyIDNumber string `json:"third_party_id_number,omitempty"`
+
 	LastVerificationDate time.Time `json:"last_verification_date"`
 	CreatedAt            time.Time `json:"created_at"`
 	UpdatedAt            time.Time `json:"updated_at"`
@@ -140,7 +152,7 @@ func (s *CustomerService) CreateCustomerWithKYC(customer *entity.Customer, kycPr
 
 	// 2. Client déjà connu (même téléphone) : on travaille avec l'existant
 	if strings.TrimSpace(customer.Phone) != "" {
-		existing, err := s.customerRepo.GetCustomerByPhone(customer.Phone)
+		existing, err := s.customerRepo.GetCustomerByPhone(customer.Phone, customer.StoreID)
 		switch {
 		case err == nil:
 			return s.completeExistingCustomer(existing, kycProfile)
@@ -167,7 +179,7 @@ func (s *CustomerService) CreateCustomerWithKYC(customer *entity.Customer, kycPr
 			if tx != nil {
 				_ = tx.Rollback()
 			}
-			existing, lookupErr := s.customerRepo.GetCustomerByPhone(customer.Phone)
+			existing, lookupErr := s.customerRepo.GetCustomerByPhone(customer.Phone, customer.StoreID)
 			if lookupErr != nil {
 				return nil, false, fmt.Errorf("failed to create base customer: %w", err)
 			}
@@ -260,8 +272,110 @@ func (s *CustomerService) validateKYCProfile(profile *CustomerKYCProfile) error 
 	if profile.ExpectedFrequency < 0 {
 		return fmt.Errorf("%w: expected_frequency cannot be negative", ErrInvalidKYCProfile)
 	}
+	normalizeVigilanceFields(profile)
+	if profile.IDExpiryDate != "" && !kycrisk.ValidDate(profile.IDExpiryDate) {
+		return fmt.Errorf("%w: id_expiry_date must be a date YYYY-MM-DD", ErrInvalidKYCProfile)
+	}
+	for field, code := range map[string]string{"nationality": profile.Nationality, "residence_country": profile.ResidenceCountry} {
+		if code != "" && len(code) != 2 {
+			return fmt.Errorf("%w: %s must be a 2-letter country code", ErrInvalidKYCProfile, field)
+		}
+	}
+	if profile.ActivitySector != "" && !kycrisk.ValidSector(profile.ActivitySector) {
+		return fmt.Errorf("%w: activity_sector must be one of %s", ErrInvalidKYCProfile, strings.Join(kycrisk.Sectors, ", "))
+	}
+	if profile.IsPEP && profile.PEPFunction == "" {
+		return fmt.Errorf("%w: pep_function is required for a politically exposed person", ErrInvalidKYCProfile)
+	}
+	if profile.ActsForThirdParty && (profile.ThirdPartyName == "" || profile.ThirdPartyIDNumber == "") {
+		return fmt.Errorf("%w: third_party_name and third_party_id_number are required when acting for a third party", ErrInvalidKYCProfile)
+	}
 	// ... ajouter d'autres règles de validation
 	return nil
+}
+
+// normalizeVigilanceFields nettoie les champs de vigilance ; ceux qui ne s'appliquent pas
+// (fonction sans PPE, tiers sans mandat) sont vidés.
+func normalizeVigilanceFields(profile *CustomerKYCProfile) {
+	profile.IDExpiryDate = strings.TrimSpace(profile.IDExpiryDate)
+	profile.Nationality = strings.ToUpper(strings.TrimSpace(profile.Nationality))
+	profile.ResidenceCountry = strings.ToUpper(strings.TrimSpace(profile.ResidenceCountry))
+	profile.ActivitySector = strings.ToUpper(strings.TrimSpace(profile.ActivitySector))
+	profile.PEPFunction = strings.TrimSpace(profile.PEPFunction)
+	profile.ThirdPartyName = strings.TrimSpace(profile.ThirdPartyName)
+	profile.ThirdPartyIDNumber = strings.TrimSpace(profile.ThirdPartyIDNumber)
+	if !profile.IsPEP {
+		profile.PEPFunction = ""
+	}
+	if !profile.ActsForThirdParty {
+		profile.ThirdPartyName = ""
+		profile.ThirdPartyIDNumber = ""
+	}
+}
+
+// CreateKYCProfileWithTx crée le profil KYC d'un client qui n'en a pas encore (statut non vérifié)
+// puis relance son évaluation de risque.
+func (s *CustomerService) CreateKYCProfileWithTx(tx *sql.Tx, customerID int, profile *CustomerKYCProfile) (*CustomerKYCProfile, error) {
+	if s.kycProfileRepo == nil {
+		return nil, fmt.Errorf("KYC profile repository is not configured")
+	}
+	if _, err := s.customerRepo.GetCustomerWithTx(tx, customerID); err != nil {
+		return nil, fmt.Errorf("failed to get customer %d: %w", customerID, err)
+	}
+	profile.CustomerID = customerID
+	profile.KYCStatus = Unverified
+	profile.LastVerificationDate = time.Time{}
+	if err := s.validateKYCProfile(profile); err != nil {
+		return nil, err
+	}
+	if err := s.kycProfileRepo.CreateKYCProfileWithTx(tx, profile); err != nil {
+		return nil, fmt.Errorf("failed to create KYC profile: %w", err)
+	}
+	if _, err := s.TriggerRiskReassessmentWithTx(tx, customerID); err != nil {
+		return profile, err
+	}
+	return profile, nil
+}
+
+// SetIDExpiryDateWithTx enregistre la date d'expiration de la pièce du client. S'il n'a pas
+// encore de dossier KYC, un dossier minimal est ouvert (personne physique, non vérifié).
+func (s *CustomerService) SetIDExpiryDateWithTx(tx *sql.Tx, customerID int, expiry string) error {
+	if s.kycProfileRepo == nil {
+		return fmt.Errorf("KYC profile repository is not configured")
+	}
+	expiry = strings.TrimSpace(expiry)
+	if expiry != "" && !kycrisk.ValidDate(expiry) {
+		return fmt.Errorf("%w: id_expiry_date must be a date YYYY-MM-DD", ErrInvalidKYCProfile)
+	}
+	profile, err := getKYCProfileWithTx(s.kycProfileRepo, tx, customerID)
+	switch {
+	case errors.Is(err, ErrKYCProfileNotFound):
+		if expiry == "" {
+			return nil
+		}
+		return s.kycProfileRepo.CreateKYCProfileWithTx(tx, &CustomerKYCProfile{
+			CustomerID:      customerID,
+			LegalNature:     Individual,
+			ActivityProfile: Personal,
+			KYCStatus:       Unverified,
+			IDExpiryDate:    expiry,
+		})
+	case err != nil:
+		return err
+	}
+	if profile.IDExpiryDate == expiry {
+		return nil
+	}
+	profile.IDExpiryDate = expiry
+	return updateKYCProfileWithTx(s.kycProfileRepo, tx, profile)
+}
+
+// GetKYCProfileWithTx lit le profil KYC dans la transaction fournie (nil : hors transaction).
+func (s *CustomerService) GetKYCProfileWithTx(tx *sql.Tx, customerID int) (*CustomerKYCProfile, error) {
+	if s.kycProfileRepo == nil {
+		return nil, fmt.Errorf("KYC profile repository is not configured")
+	}
+	return getKYCProfileWithTx(s.kycProfileRepo, tx, customerID)
 }
 
 // calculateInitialRisk calcule le score de risque initial basé sur les informations KYC.

@@ -1,6 +1,7 @@
 package traderservices
 
 import (
+	"errors"
 	"fmt"
 	"fx-app-api/internal/domain/trader/entity"
 	"fx-app-api/internal/storage"
@@ -9,6 +10,9 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 )
+
+// ErrAccountPending : inscription pas encore acceptée par un superviseur du bureau.
+var ErrAccountPending = errors.New("account pending approval")
 
 type AuthService struct {
 	traderRepo storage.TraderStorage
@@ -36,19 +40,32 @@ func (s *AuthService) AuthenticateTrader(email, password string) (*AuthResult, e
 	if err != nil {
 		return nil, fmt.Errorf("invalid credentials")
 	}
-	if !trader.IsActive {
-		return nil, fmt.Errorf("invalid credentials")
-	}
 	if err := bcrypt.CompareHashAndPassword([]byte(trader.PasswordHash), []byte(password)); err != nil {
 		return nil, fmt.Errorf("invalid credentials")
 	}
+	if !trader.IsActive {
+		// On ne le dit qu'au titulaire du mot de passe : un inconnu reçoit le message habituel.
+		if strings.EqualFold(trader.Status, "PENDING") {
+			return nil, ErrAccountPending
+		}
+		return nil, fmt.Errorf("invalid credentials")
+	}
 
-	token, err := tokenservice.CreateToken(displayName(trader), trader.Email, []string{trader.Roles}, []string{trader.Status})
+	token, err := s.IssueToken(trader)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create token: %w", err)
+		return nil, err
 	}
 
 	return &AuthResult{Token: token, Trader: trader}, nil
+}
+
+// IssueToken délivre un jeton de session lié au mot de passe actuel du compte.
+func (s *AuthService) IssueToken(trader *entity.Trader) (string, error) {
+	token, err := tokenservice.CreateSessionToken(displayName(trader), trader.Email, []string{trader.Roles}, []string{trader.Status}, trader.PasswordHash)
+	if err != nil {
+		return "", fmt.Errorf("failed to create token: %w", err)
+	}
+	return token, nil
 }
 
 func HashPassword(password string) (string, error) {

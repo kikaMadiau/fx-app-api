@@ -146,7 +146,7 @@ func (r *TransactionRepository) CreateTransactionWithNewCustomer(tx *entity.Tran
 		return nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 
-	existing, err := selectCustomerByPhone(dbTx, normalizedPhone, true)
+	existing, err := selectCustomerByPhone(dbTx, normalizedPhone, customer.StoreID, true)
 	switch {
 	case err == nil:
 		*customer = *existing
@@ -185,7 +185,7 @@ func (r *TransactionRepository) CreateTransactionForExistingCustomerPhone(tx *en
 		return nil, nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 
-	customer, err := selectCustomerByPhone(dbTx, normalizedPhone, true)
+	customer, err := selectCustomerByPhone(dbTx, normalizedPhone, tx.StoreID, true)
 	if err != nil {
 		_ = dbTx.Rollback()
 		if errors.Is(err, sql.ErrNoRows) {
@@ -289,6 +289,9 @@ func (r *TransactionRepository) ListTransactionsWithTx(dbTx *sql.Tx, filter stor
 	if filter.TraderID > 0 {
 		conditions = append(conditions, "t.trader_id = "+addArg(filter.TraderID))
 	}
+	if filter.StoreID != 0 {
+		conditions = append(conditions, "t.store_id = "+addArg(filter.StoreID))
+	}
 	if !filter.Since.IsZero() {
 		conditions = append(conditions, "t.created_at >= "+addArg(filter.Since))
 	}
@@ -350,6 +353,9 @@ func (r *TransactionRepository) SearchTransactions(filter storage.TransactionFil
 	}
 	if filter.TraderID > 0 {
 		conditions = append(conditions, "t.trader_id = "+addArg(filter.TraderID))
+	}
+	if filter.StoreID != 0 {
+		conditions = append(conditions, "t.store_id = "+addArg(filter.StoreID))
 	}
 	if filter.Status != "" {
 		conditions = append(conditions, "t.status = "+addArg(filter.Status))
@@ -447,30 +453,32 @@ func insertTransaction(q rowQuerier, tx *entity.Transaction) error {
 	query := `
 		INSERT INTO transactions (
 			amount, currency, target_currency, type, rate, converted_amount,
-			risk_level, risk_score, status, trader_id, customer_id, created_at, updated_at
+			risk_level, risk_score, status, trader_id, customer_id, created_at, updated_at, store_id
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
-		) RETURNING id, created_at, updated_at`
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+			(SELECT store_id FROM customers WHERE id = $11)
+		) RETURNING id, created_at, updated_at, store_id`
 
 	tx.CreatedAt = time.Now()
 	tx.UpdatedAt = time.Now()
 
-	return q.QueryRow(query, tx.Amount, tx.Currency, tx.TargetCurrency, tx.Type, tx.Rate, tx.ConvertedAmount, tx.RiskLevel, tx.RiskScore, tx.Status, tx.TraderID, tx.CustomerID, tx.CreatedAt, tx.UpdatedAt).Scan(&tx.ID, &tx.CreatedAt, &tx.UpdatedAt)
+	return q.QueryRow(query, tx.Amount, tx.Currency, tx.TargetCurrency, tx.Type, tx.Rate, tx.ConvertedAmount, tx.RiskLevel, tx.RiskScore, tx.Status, tx.TraderID, tx.CustomerID, tx.CreatedAt, tx.UpdatedAt).Scan(&tx.ID, &tx.CreatedAt, &tx.UpdatedAt, &tx.StoreID)
 }
 
-func selectCustomerByPhone(q rowQuerier, normalizedPhone string, lock bool) (*customerentity.Customer, error) {
+// selectCustomerByPhone cherche le client dans un bureau (storeID 0 : tous les bureaux).
+func selectCustomerByPhone(q rowQuerier, normalizedPhone string, storeID int, lock bool) (*customerentity.Customer, error) {
 	query := `
 		SELECT id, full_name, id_number, COALESCE(id_type, ''), COALESCE(phone, ''),
 		       COALESCE(address, ''), created_at, updated_at, deleted_at,
-		       COALESCE(risk_level, ''), COALESCE(risk_score, 0)
+		       COALESCE(risk_level, ''), COALESCE(risk_score, 0), store_id
 		FROM customers
-		WHERE phone = $1 AND deleted_at IS NULL`
+		WHERE phone = $1 AND ($2 = 0 OR store_id = $2) AND deleted_at IS NULL`
 	if lock {
 		query += " FOR UPDATE"
 	}
 
 	customer := &customerentity.Customer{}
-	err := q.QueryRow(query, normalizedPhone).Scan(&customer.ID, &customer.FullName, &customer.IDNumber, &customer.IDType, &customer.Phone, &customer.Address, &customer.CreatedAt, &customer.UpdatedAt, &customer.DeletedAt, &customer.RiskLevel, &customer.RiskScore)
+	err := q.QueryRow(query, normalizedPhone, storeID).Scan(&customer.ID, &customer.FullName, &customer.IDNumber, &customer.IDType, &customer.Phone, &customer.Address, &customer.CreatedAt, &customer.UpdatedAt, &customer.DeletedAt, &customer.RiskLevel, &customer.RiskScore, &customer.StoreID)
 	if err != nil {
 		return nil, err
 	}

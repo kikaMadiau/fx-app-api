@@ -161,26 +161,46 @@ func (h *Handler) HandleUpdateStore(w http.ResponseWriter, r *http.Request) erro
 	return WriteJson(w, http.StatusOK, updated)
 }
 
+type storeMemberResponse struct {
+	ID        int       `json:"id"`
+	FirstName string    `json:"first_name"`
+	LastName  string    `json:"last_name"`
+	Email     string    `json:"email"`
+	Phone     string    `json:"phone"`
+	Status    string    `json:"status"`
+	Roles     string    `json:"roles"`
+	IsActive  bool      `json:"is_active"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 func (h *Handler) HandleListStoreMembers(w http.ResponseWriter, r *http.Request) error {
 	id, err := pathID(r)
 	if err != nil {
 		return badRequest("invalid store id", err)
 	}
-	user := traderservices.GetUser(r)
-	if user == nil || user.StoreId != id {
-		return notFound("store not found")
+	if err := requireOwnStore(r, id); err != nil {
+		return err
 	}
 	members, err := h.storeRepo.Members(id)
 	if err != nil {
 		return fmt.Errorf("list store members: %w", err)
 	}
-	return WriteJson(w, http.StatusOK, map[string]any{"items": members, "total": len(members)})
+	// Réponse limitée aux champs utiles à l'écran « Mon équipe » (jamais le hachage du mot de passe).
+	items := make([]storeMemberResponse, 0, len(members))
+	for _, m := range members {
+		items = append(items, storeMemberResponse{ID: m.Id, FirstName: m.FirstName, LastName: m.LastName,
+			Email: m.Email, Phone: m.Phone, Status: m.Status, Roles: m.Roles, IsActive: m.IsActive, CreatedAt: m.CreatedAt})
+	}
+	return WriteJson(w, http.StatusOK, map[string]any{"items": items, "total": len(items)})
 }
 
 func (h *Handler) HandleAddStoreMember(w http.ResponseWriter, r *http.Request) error {
 	id, err := pathID(r)
 	if err != nil {
 		return badRequest("invalid store id", err)
+	}
+	if err := requireOwnStore(r, id); err != nil {
+		return err
 	}
 	var req addMemberRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -220,6 +240,9 @@ func (h *Handler) HandleUpdateStoreMember(w http.ResponseWriter, r *http.Request
 	id, err := pathID(r)
 	if err != nil {
 		return badRequest("invalid store id", err)
+	}
+	if err := requireOwnStore(r, id); err != nil {
+		return err
 	}
 	traderID, err := positivePathInt(r, "traderId")
 	if err != nil {
@@ -271,6 +294,29 @@ func temporaryPassword() (string, error) {
 	}
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
+// HandleRejectStoreMember : le superviseur refuse une inscription en attente.
+func (h *Handler) HandleRejectStoreMember(w http.ResponseWriter, r *http.Request) error {
+	id, err := pathID(r)
+	if err != nil {
+		return badRequest("invalid store id", err)
+	}
+	if err := requireOwnStore(r, id); err != nil {
+		return err
+	}
+	traderID, err := positivePathInt(r, "traderId")
+	if err != nil {
+		return badRequest("invalid trader id", err)
+	}
+	if err := h.storeRepo.RejectPending(id, traderservices.GetUser(r).Id, traderID); err != nil {
+		if errors.Is(err, storerepository.ErrStoreNotFound) {
+			return notFound("pending registration not found")
+		}
+		return storeRepositoryError(err)
+	}
+	w.WriteHeader(http.StatusNoContent)
+	return nil
+}
+
 func validateStoreRoles(roles []string) error {
 	if len(roles) == 0 {
 		return fmt.Errorf("at least one role is required")
@@ -291,6 +337,16 @@ func containsRole(roles []string, role string) bool {
 	}
 	return false
 }
+// requireOwnStore : un superviseur ne gère que les membres de son propre bureau. Un autre
+// bureau répond 404, comme s'il n'existait pas.
+func requireOwnStore(r *http.Request, storeID int) error {
+	user := traderservices.GetUser(r)
+	if user == nil || user.StoreId != storeID {
+		return notFound("store not found")
+	}
+	return nil
+}
+
 func storeRepositoryError(err error) error {
 	switch {
 	case errors.Is(err, storerepository.ErrStoreNotFound):

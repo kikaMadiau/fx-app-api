@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"fx-app-api/internal/domain/customer/entity"
+	"fx-app-api/internal/domain/customer/kycrisk"
 	"fx-app-api/internal/storage"
 	"strings"
 	"time"
@@ -25,6 +26,10 @@ type sqlExecutor interface {
 }
 
 // pickExecutor renvoie la transaction si elle est fournie, la connexion sinon.
+// defaultStoreSQL : bureau provisoire créé par la migration, utilisé quand un client est créé
+// sans bureau (administrateur de la plateforme).
+const defaultStoreSQL = `(SELECT id FROM stores WHERE bcc_license_number = 'MIGRATION-PENDING' AND deleted_at IS NULL ORDER BY id LIMIT 1)`
+
 func pickExecutor(db *sql.DB, tx *sql.Tx) sqlExecutor {
 	if tx != nil {
 		return tx
@@ -75,7 +80,8 @@ func (r *CustomerRepository) Init() error {
 	alterTableSQL := `
 		ALTER TABLE customers
 			ADD COLUMN IF NOT EXISTS risk_level VARCHAR(50),
-			ADD COLUMN IF NOT EXISTS risk_score NUMERIC(5, 2) DEFAULT 0;`
+			ADD COLUMN IF NOT EXISTS risk_score NUMERIC(5, 2) DEFAULT 0,
+			ADD COLUMN IF NOT EXISTS email VARCHAR(255);`
 
 	if _, err := r.store.DB().Exec(alterTableSQL); err != nil {
 		return err
@@ -86,6 +92,18 @@ func (r *CustomerRepository) Init() error {
 	// UNIQUE sur id_number (créée avant ce changement) est donc remplacée par un index partiel.
 	if _, err := r.store.DB().Exec(`ALTER TABLE customers DROP CONSTRAINT IF EXISTS customers_id_number_key`); err != nil {
 		return err
+	}
+
+	// Avec les bureaux de change (colonne store_id), l'unicité est par bureau : la migration
+	// des stores crée ces index et supprime les index globaux. Il ne faut pas les recréer ici,
+	// sinon le même client dans deux bureaux empêche l'API de démarrer.
+	var perStore bool
+	if err := r.store.DB().QueryRow(`SELECT EXISTS (SELECT 1 FROM information_schema.columns
+		WHERE table_schema = current_schema() AND table_name = 'customers' AND column_name = 'store_id')`).Scan(&perStore); err != nil {
+		return err
+	}
+	if perStore {
+		return nil
 	}
 
 	uniqueIDNumberSQL := `
@@ -119,10 +137,10 @@ func (r *CustomerRepository) CreateCustomerWithTx(tx *sql.Tx, customer *entity.C
 
 	query := `
 		INSERT INTO customers (
-			full_name, id_number, id_type, phone, address, created_at, updated_at
+			full_name, id_number, id_type, phone, address, created_at, updated_at, store_id
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7
-		) RETURNING id, created_at, updated_at`
+			$1, $2, $3, $4, $5, $6, $7, COALESCE(NULLIF($8, 0), ` + defaultStoreSQL + `)
+		) RETURNING id, created_at, updated_at, store_id`
 
 	customer.CreatedAt = time.Now()
 	customer.UpdatedAt = time.Now()
@@ -135,7 +153,8 @@ func (r *CustomerRepository) CreateCustomerWithTx(tx *sql.Tx, customer *entity.C
 		customer.Address,
 		customer.CreatedAt,
 		customer.UpdatedAt,
-	).Scan(&customer.ID, &customer.CreatedAt, &customer.UpdatedAt)
+		customer.StoreID,
+	).Scan(&customer.ID, &customer.CreatedAt, &customer.UpdatedAt, &customer.StoreID)
 
 	if err != nil {
 		return mapCustomerWriteError("create customer", err)
@@ -154,7 +173,7 @@ func (r *CustomerRepository) GetCustomerWithTx(tx *sql.Tx, id int) (*entity.Cust
 	query := `
 		SELECT id, full_name, id_number, COALESCE(id_type, ''), COALESCE(phone, ''),
 		       COALESCE(address, ''), created_at, updated_at, deleted_at,
-		       COALESCE(risk_level, ''), COALESCE(risk_score, 0)
+		       COALESCE(risk_level, ''), COALESCE(risk_score, 0), COALESCE(email, ''), store_id
 		FROM customers
 		WHERE id = $1 AND deleted_at IS NULL`
 	customer := &entity.Customer{}
@@ -171,6 +190,8 @@ func (r *CustomerRepository) GetCustomerWithTx(tx *sql.Tx, id int) (*entity.Cust
 		&customer.DeletedAt,
 		&customer.RiskLevel,
 		&customer.RiskScore,
+		&customer.Email,
+		&customer.StoreID,
 	)
 
 	if err != nil {
@@ -184,13 +205,13 @@ func (r *CustomerRepository) GetCustomerWithTx(tx *sql.Tx, id int) (*entity.Cust
 }
 
 // GetCustomerByPhone récupère un client par son numéro de téléphone normalisé.
-func (r *CustomerRepository) GetCustomerByPhone(phone string) (*entity.Customer, error) {
+func (r *CustomerRepository) GetCustomerByPhone(phone string, storeID int) (*entity.Customer, error) {
 	normalizedPhone, err := storage.NormalizePhone(phone)
 	if err != nil {
 		return nil, err
 	}
 
-	customer, err := r.getCustomerByPhone(normalizedPhone)
+	customer, err := r.getCustomerByPhone(normalizedPhone, storeID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, fmt.Errorf("%w: %s", storage.ErrCustomerNotFound, normalizedPhone)
@@ -280,6 +301,9 @@ func (r *CustomerRepository) ListCustomers(filter storage.CustomerFilter) ([]*en
 	if filter.RiskLevel != "" {
 		conditions = append(conditions, "c.risk_level = "+addArg(filter.RiskLevel))
 	}
+	if filter.StoreID != 0 {
+		conditions = append(conditions, "c.store_id = "+addArg(filter.StoreID))
+	}
 
 	where := strings.Join(conditions, " AND ")
 	const fromClause = `
@@ -311,7 +335,7 @@ func (r *CustomerRepository) ListCustomers(filter storage.CustomerFilter) ([]*en
 	listQuery := `
 		SELECT c.id, c.full_name, c.id_number, COALESCE(c.id_type, ''), COALESCE(c.phone, ''),
 		       COALESCE(c.address, ''), c.created_at, c.updated_at, c.deleted_at,
-		       COALESCE(c.risk_level, ''), COALESCE(c.risk_score, 0),
+		       COALESCE(c.risk_level, ''), COALESCE(c.risk_score, 0), COALESCE(c.email, ''),
 		       COALESCE(k.kyc_status, ''),
 		       (SELECT COUNT(*) FROM transactions t
 		         WHERE t.customer_id = c.id AND t.deleted_at IS NULL),
@@ -321,7 +345,18 @@ func (r *CustomerRepository) ListCustomers(filter storage.CustomerFilter) ([]*en
 		       COALESCE((SELECT COALESCE(NULLIF(f.reason, ''), f.flag) FROM risk_flags f
 		         WHERE f.customer_id = c.id AND f.deleted_at IS NULL
 		           AND f.status IN ('OPEN', 'IN_REVIEW')
-		         ORDER BY f.created_at DESC, f.id DESC LIMIT 1), '')` +
+		         ORDER BY f.created_at DESC, f.id DESC LIMIT 1), ''),
+		       COALESCE((SELECT t.id FROM transactions t
+		         WHERE t.customer_id = c.id AND t.deleted_at IS NULL
+		         ORDER BY t.created_at DESC, t.id DESC LIMIT 1), 0),
+		       EXISTS (SELECT 1 FROM customer_id_documents d WHERE d.customer_id = c.id AND d.side = 'front'),
+		       EXISTS (SELECT 1 FROM customer_id_documents d WHERE d.customer_id = c.id AND d.side = 'back'),
+		       COALESCE(k.kyc_status IN ('VERIFIED', 'ENHANCED_VERIFICATION')
+		         AND k.last_verification_date + CASE
+		           WHEN c.risk_level IN ('HIGH', 'CRITICAL') THEN INTERVAL '12 months'
+		           WHEN c.risk_level = 'MEDIUM' THEN INTERVAL '24 months'
+		           ELSE INTERVAL '36 months' END < NOW(), FALSE),
+		       COALESCE(k.id_expiry_date < DATE '` + time.Now().In(kycrisk.Location()).Format("2006-01-02") + `', FALSE)` +
 		fromClause + `
 		WHERE ` + where + `
 		ORDER BY c.created_at DESC, c.id DESC
@@ -348,10 +383,16 @@ func (r *CustomerRepository) ListCustomers(filter storage.CustomerFilter) ([]*en
 			&summary.DeletedAt,
 			&summary.RiskLevel,
 			&summary.RiskScore,
+			&summary.Email,
 			&summary.KYCStatus,
 			&summary.TransactionCount,
 			&summary.OpenRiskFlags,
 			&summary.LatestFlagReason,
+			&summary.LatestTransactionID,
+			&summary.IDFrontPhoto,
+			&summary.IDBackPhoto,
+			&summary.KYCReviewDue,
+			&summary.IDExpired,
 		); err != nil {
 			return nil, 0, fmt.Errorf("failed to scan customer: %w", err)
 		}
@@ -364,16 +405,17 @@ func (r *CustomerRepository) ListCustomers(filter storage.CustomerFilter) ([]*en
 	return customers, total, nil
 }
 
-func (r *CustomerRepository) getCustomerByPhone(normalizedPhone string) (*entity.Customer, error) {
+func (r *CustomerRepository) getCustomerByPhone(normalizedPhone string, storeID int) (*entity.Customer, error) {
 	query := `
 		SELECT id, full_name, id_number, COALESCE(id_type, ''), COALESCE(phone, ''),
 		       COALESCE(address, ''), created_at, updated_at, deleted_at,
-		       COALESCE(risk_level, ''), COALESCE(risk_score, 0)
+		       COALESCE(risk_level, ''), COALESCE(risk_score, 0), COALESCE(email, ''), store_id
 		FROM customers
-		WHERE phone = $1 AND deleted_at IS NULL`
+		WHERE phone = $1 AND ($2 = 0 OR store_id = $2) AND deleted_at IS NULL
+		ORDER BY id LIMIT 1`
 
 	customer := &entity.Customer{}
-	err := r.store.DB().QueryRow(query, strings.TrimSpace(normalizedPhone)).Scan(
+	err := r.store.DB().QueryRow(query, strings.TrimSpace(normalizedPhone), storeID).Scan(
 		&customer.ID,
 		&customer.FullName,
 		&customer.IDNumber,
@@ -385,6 +427,8 @@ func (r *CustomerRepository) getCustomerByPhone(normalizedPhone string) (*entity
 		&customer.DeletedAt,
 		&customer.RiskLevel,
 		&customer.RiskScore,
+		&customer.Email,
+		&customer.StoreID,
 	)
 
 	return customer, err

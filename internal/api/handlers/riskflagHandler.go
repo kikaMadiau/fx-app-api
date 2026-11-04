@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	riskflagentity "fx-app-api/internal/domain/riskflag/entity"
+	"fx-app-api/internal/domain/trader/permissions"
 	traderservices "fx-app-api/internal/domain/trader/traderservices"
 	"fx-app-api/internal/storage"
 	"net/http"
@@ -131,6 +132,9 @@ func (h *Handler) HandleCreateRiskFlag(w http.ResponseWriter, r *http.Request) e
 	if req.TraderID > 0 && req.TraderID != user.Id {
 		return &HTTPError{StatusCode: http.StatusForbidden, Message: "trader_id must match the authenticated trader"}
 	}
+	if err := h.requireInStore(r, "customers", req.CustomerID, "customer not found"); err != nil {
+		return err
+	}
 	if _, err := h.customerStore.GetCustomer(req.CustomerID); err != nil {
 		if errors.Is(err, storage.ErrCustomerIDNotFound) {
 			return notFound("customer not found")
@@ -173,6 +177,11 @@ func (h *Handler) HandleListRiskFlags(w http.ResponseWriter, r *http.Request) er
 		return err
 	}
 
+	// Comme pour les transactions, un trader ne voit que les alertes de ses propres opérations.
+	if user := traderservices.GetUser(r); user != nil && strings.EqualFold(user.Roles, string(permissions.Trader)) {
+		filter.TraderID = user.Id
+	}
+	filter.StoreID = traderservices.RequestStoreScope(r)
 	filter.Limit = boundedLimit(filter.Limit, 20, 100)
 	flags, total, err := h.riskFlagStore.ListRiskFlagsWithDetails(filter)
 	if err != nil {
@@ -201,6 +210,9 @@ func (h *Handler) HandleGetRiskFlag(w http.ResponseWriter, r *http.Request) erro
 			return notFound("risk flag not found")
 		}
 		return fmt.Errorf("failed to get risk flag: %w", err)
+	}
+	if user := traderservices.GetUser(r); user != nil && strings.EqualFold(user.Roles, string(permissions.Trader)) && flag.TraderId != user.Id {
+		return notFound("risk flag not found")
 	}
 
 	return WriteJson(w, http.StatusOK, flag)

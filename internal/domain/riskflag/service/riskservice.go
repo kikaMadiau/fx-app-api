@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	customerentity "fx-app-api/internal/domain/customer/entity"
+	"fx-app-api/internal/domain/customer/kycrisk"
 	customerservice "fx-app-api/internal/domain/customer/service"
 	riskflagentity "fx-app-api/internal/domain/riskflag/entity"
 	transactionentity "fx-app-api/internal/domain/transaction/entity"
@@ -23,6 +24,14 @@ type RuleContext struct {
 	Customer           *customerentity.Customer
 	KYCProfile         *customerservice.CustomerKYCProfile
 	RecentTransactions []*transactionentity.Transaction
+	// Signaux lus en base (photos de la pièce, doublons, opération précédente) ; nil s'ils sont indisponibles.
+	Signals *kycrisk.Signals
+}
+
+// SignalSource fournit les signaux KYC calculés en base et les alertes encore ouvertes d'un client.
+type SignalSource interface {
+	CustomerSignals(tx *sql.Tx, customerID, excludeTransactionID int) (*kycrisk.Signals, error)
+	OpenFlagNames(tx *sql.Tx, customerID int) (map[string]bool, error)
 }
 
 // Rule est l'interface pour toutes les règles de risque.
@@ -39,6 +48,10 @@ type RuleConfig struct {
 	ThresholdAmount float64
 	ThresholdCount  int
 	Window          time.Duration
+	// Margin : part sous le seuil considérée comme « juste en dessous » (règle de fractionnement).
+	Margin float64
+	// Alert vaut false pour une règle qui compte dans le score sans créer d'alerte.
+	Alert bool
 }
 
 type riskRulesFile struct {
@@ -54,6 +67,8 @@ type ruleDefinition struct {
 	ThresholdAmount *float64 `json:"threshold_amount,omitempty"`
 	ThresholdCount  *int     `json:"threshold_count,omitempty"`
 	Window          string   `json:"window,omitempty"`
+	Margin          *float64 `json:"margin,omitempty"`
+	Alert           *bool    `json:"alert,omitempty"`
 }
 
 // RiskService orchestre l'analyse de risque.
@@ -66,6 +81,9 @@ type RiskService struct {
 	// Moteur de règles
 	transactionRules []Rule
 	customerRules    []Rule
+	// Règles qui comptent dans le score sans créer d'alerte (option "alert": false).
+	silentRules map[string]bool
+	signals     SignalSource
 
 	// Service d'investigation des risk_flags
 	Investigation *InvestigationService
@@ -78,7 +96,9 @@ func NewRiskService(
 	riskFlagRepo storage.RiskFlagStorage,
 	customerService *customerservice.CustomerService,
 ) *RiskService {
-	transactionRules, customerRules := loadRules()
+	definitions := loadRuleDefinitions()
+	transactionRules := buildTransactionRules(definitions.TransactionRules)
+	customerRules := buildCustomerRules(definitions.CustomerRules)
 	investigationService := NewInvestigationService(riskFlagRepo)
 
 	return &RiskService{
@@ -88,8 +108,80 @@ func NewRiskService(
 		customerService:  customerService,
 		transactionRules: transactionRules,
 		customerRules:    customerRules,
+		silentRules:      silentRuleNames(definitions),
 		Investigation:    investigationService,
 	}
+}
+
+// SetSignalSource branche la lecture des signaux KYC (photos, doublons, alertes ouvertes).
+func (s *RiskService) SetSignalSource(source SignalSource) {
+	s.signals = source
+}
+
+func (s *RiskService) loadSignals(dbTx *sql.Tx, customerID, transactionID int) *kycrisk.Signals {
+	if s.signals == nil {
+		return nil
+	}
+	signals, err := s.signals.CustomerSignals(dbTx, customerID, transactionID)
+	if err != nil {
+		log.Printf("Warning: KYC signals unavailable for customer %d: %v", customerID, err)
+		return nil
+	}
+	return signals
+}
+
+// CustomerFactors évalue les règles client sans rien enregistrer : ce sont les facteurs de
+// risque KYC affichés sur le dossier du client, et le score qui en découle.
+func (s *RiskService) CustomerFactors(dbTx *sql.Tx, customerID int) ([]*riskflagentity.RiskFlag, float64, error) {
+	customer, err := s.customerRepo.GetCustomerWithTx(dbTx, customerID)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to get customer %d: %w", customerID, err)
+	}
+	var kycProfile *customerservice.CustomerKYCProfile
+	if s.customerService != nil {
+		if profile, err := s.customerService.GetKYCProfileWithTx(dbTx, customerID); err == nil {
+			kycProfile = profile
+		}
+	}
+	recent, err := s.transactionRepo.ListTransactionsWithTx(dbTx, storage.TransactionFilter{
+		CustomerID: customerID,
+		Since:      time.Now().AddDate(0, 0, -30),
+	})
+	if err != nil {
+		recent = nil
+	}
+	result, flags := s.runCustomerRules(&RuleContext{
+		Customer:           customer,
+		KYCProfile:         kycProfile,
+		RecentTransactions: recent,
+		Signals:            s.loadSignals(dbTx, customerID, 0),
+	})
+	return flags, result.Score, nil
+}
+
+// ReassessCustomer recalcule le score et le niveau de risque du client à partir des règles
+// client (pièce, dossier, vigilance) et les enregistre. Appelé quand le dossier change : le
+// niveau enregistré décide d'une validation par la conformité au guichet.
+func (s *RiskService) ReassessCustomer(dbTx *sql.Tx, customerID int) (*customerentity.Customer, error) {
+	_, score, err := s.CustomerFactors(dbTx, customerID)
+	if err != nil {
+		return nil, err
+	}
+	customer, err := s.customerRepo.GetCustomerWithTx(dbTx, customerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get customer %d: %w", customerID, err)
+	}
+	customer.RiskScore = score
+	customer.RiskLevel = CustomerLevel(score)
+	if err := s.customerRepo.UpdateCustomerWithTx(dbTx, customer); err != nil {
+		return nil, fmt.Errorf("failed to update customer %d risk: %w", customerID, err)
+	}
+	return customer, nil
+}
+
+// CustomerLevel convertit un score client en niveau, avec les mêmes seuils que l'analyse des opérations.
+func CustomerLevel(score float64) string {
+	return calculateLevel(score, 90, 60, 30)
 }
 
 // AnalyzeTransactionAndCustomer est la méthode principale appelée après la création d'une transaction.
@@ -111,14 +203,14 @@ func (s *RiskService) AnalyzeTransactionAndCustomerWithTx(dbTx *sql.Tx, tx *tran
 
 	var kycProfile *customerservice.CustomerKYCProfile
 	if s.customerService != nil {
-		if profile, err := s.customerService.GetKYCProfile(customer.ID); err == nil {
+		if profile, err := s.customerService.GetKYCProfileWithTx(dbTx, customer.ID); err == nil {
 			kycProfile = profile
 		} else {
 			log.Printf("Warning: KYC profile unavailable for customer %d: %v", customer.ID, err)
 		}
 	}
 
-	recentTransactions, err := s.transactionRepo.ListTransactions(storage.TransactionFilter{
+	recentTransactions, err := s.transactionRepo.ListTransactionsWithTx(dbTx, storage.TransactionFilter{
 		CustomerID: customer.ID,
 		Since:      time.Now().AddDate(0, 0, -30),
 	})
@@ -132,6 +224,7 @@ func (s *RiskService) AnalyzeTransactionAndCustomerWithTx(dbTx *sql.Tx, tx *tran
 		Customer:           customer,
 		KYCProfile:         kycProfile,
 		RecentTransactions: recentTransactions,
+		Signals:            s.loadSignals(dbTx, customer.ID, tx.ID),
 	}
 
 	transactionRisk, transactionFlags := s.runTransactionRules(ctx)
@@ -147,7 +240,29 @@ func (s *RiskService) AnalyzeTransactionAndCustomerWithTx(dbTx *sql.Tx, tx *tran
 	// 3. Analyse comportementale et KYC du client
 	customerRisk, customerFlags := s.runCustomerRules(ctx)
 
-	for _, flag := range append(transactionFlags, customerFlags...) {
+	// Une alerte client (dossier incomplet, pièce expirée…) n'est pas recréée à chaque opération
+	// tant que la précédente n'est pas traitée.
+	openFlags := map[string]bool{}
+	if s.signals != nil {
+		if names, err := s.signals.OpenFlagNames(dbTx, customer.ID); err == nil {
+			openFlags = names
+		} else {
+			log.Printf("Warning: open risk flags unavailable for customer %d: %v", customer.ID, err)
+		}
+	}
+	alerts := make([]*riskflagentity.RiskFlag, 0, len(transactionFlags)+len(customerFlags))
+	for _, flag := range transactionFlags {
+		if !s.silentRules[flag.Flag] {
+			alerts = append(alerts, flag)
+		}
+	}
+	for _, flag := range customerFlags {
+		if !s.silentRules[flag.Flag] && !openFlags[flag.Flag] {
+			alerts = append(alerts, flag)
+		}
+	}
+
+	for _, flag := range alerts {
 		transactionID := tx.ID
 		flag.TransactionId = &transactionID
 		flag.TraderId = tx.TraderID
@@ -379,43 +494,59 @@ func (r *ExpectedVolumeExceededRule) Evaluate(ctx *RuleContext) *riskflagentity.
 	return nil
 }
 
-func loadRules() ([]Rule, []Rule) {
+// loadRuleDefinitions lit le catalogue de règles (RISK_RULES_CONFIG_PATH ou config/risk_rules.json),
+// et revient au catalogue par défaut si le fichier est absent ou invalide.
+func loadRuleDefinitions() riskRulesFile {
 	configPath := os.Getenv("RISK_RULES_CONFIG_PATH")
 	if configPath == "" {
 		configPath = "config/risk_rules.json"
 	}
 
-	transactionRules, customerRules, err := loadRulesFromFile(configPath)
+	config, err := readRulesFile(configPath)
 	if err == nil {
-		return transactionRules, customerRules
+		return config
 	}
 	if !errors.Is(err, os.ErrNotExist) {
 		log.Printf("Warning: failed to load risk rules from %s: %v. Falling back to defaults", configPath, err)
 	}
 
-	defaults := defaultRiskRulesFile()
-	return buildTransactionRules(defaults.TransactionRules), buildCustomerRules(defaults.CustomerRules)
+	return defaultRiskRulesFile()
 }
 
-func loadRulesFromFile(path string) ([]Rule, []Rule, error) {
+func readRulesFile(path string) (riskRulesFile, error) {
+	var config riskRulesFile
 	file, err := os.Open(path)
 	if err != nil {
-		return nil, nil, err
+		return config, err
 	}
 	defer file.Close()
 
-	var config riskRulesFile
 	if err := json.NewDecoder(file).Decode(&config); err != nil {
-		return nil, nil, fmt.Errorf("decode risk rules config: %w", err)
+		return config, fmt.Errorf("decode risk rules config: %w", err)
 	}
-
-	transactionRules := buildTransactionRules(config.TransactionRules)
-	customerRules := buildCustomerRules(config.CustomerRules)
-	if len(transactionRules) == 0 && len(customerRules) == 0 {
-		return nil, nil, errors.New("risk rules config does not define any enabled rule")
+	if len(buildTransactionRules(config.TransactionRules)) == 0 && len(buildCustomerRules(config.CustomerRules)) == 0 {
+		return config, errors.New("risk rules config does not define any enabled rule")
 	}
+	return config, nil
+}
 
-	return transactionRules, customerRules, nil
+func loadRulesFromFile(path string) ([]Rule, []Rule, error) {
+	config, err := readRulesFile(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	return buildTransactionRules(config.TransactionRules), buildCustomerRules(config.CustomerRules), nil
+}
+
+// silentRuleNames liste les règles actives marquées "alert": false.
+func silentRuleNames(config riskRulesFile) map[string]bool {
+	names := map[string]bool{}
+	for _, definition := range append(append([]ruleDefinition{}, config.TransactionRules...), config.CustomerRules...) {
+		if ruleConfig, ok := ruleConfigFromDefinition(definition); ok && !ruleConfig.Alert {
+			names[ruleConfig.Name] = true
+		}
+	}
+	return names
 }
 
 func buildTransactionRules(definitions []ruleDefinition) []Rule {
@@ -433,6 +564,12 @@ func buildTransactionRules(definitions []ruleDefinition) []Rule {
 			rules = append(rules, &CumulativeVolumeRule{Config: config})
 		case "transaction_frequency":
 			rules = append(rules, &TransactionFrequencyRule{Config: config})
+		case "structuring":
+			rules = append(rules, &StructuringRule{Config: config})
+		case "round_trip":
+			rules = append(rules, &RoundTripRule{Config: config})
+		case "dormant_reactivation":
+			rules = append(rules, &DormantReactivationRule{Config: config})
 		default:
 			log.Printf("Warning: unknown transaction risk rule type %q", definition.Type)
 		}
@@ -458,6 +595,28 @@ func buildCustomerRules(definitions []ruleDefinition) []Rule {
 			rules = append(rules, &BusinessActivityRule{Config: config})
 		case "expected_volume_exceeded":
 			rules = append(rules, &ExpectedVolumeExceededRule{Config: config})
+		case "missing_id_document":
+			rules = append(rules, &MissingIDDocumentRule{Config: config})
+		case "missing_id_photo":
+			rules = append(rules, &MissingIDPhotoRule{Config: config})
+		case "missing_phone":
+			rules = append(rules, &MissingPhoneRule{Config: config})
+		case "missing_address":
+			rules = append(rules, &MissingAddressRule{Config: config})
+		case "duplicate_id_number":
+			rules = append(rules, &DuplicateIDNumberRule{Config: config})
+		case "expired_id_document":
+			rules = append(rules, &ExpiredIDDocumentRule{Config: config})
+		case "politically_exposed":
+			rules = append(rules, &PoliticallyExposedRule{Config: config})
+		case "sensitive_sector":
+			rules = append(rules, &SensitiveSectorRule{Config: config})
+		case "third_party":
+			rules = append(rules, &ThirdPartyRule{Config: config})
+		case "foreign_or_non_resident":
+			rules = append(rules, &ForeignOrNonResidentRule{Config: config})
+		case "kyc_review_due":
+			rules = append(rules, &KYCReviewDueRule{Config: config})
 		default:
 			log.Printf("Warning: unknown customer risk rule type %q", definition.Type)
 		}
@@ -479,6 +638,11 @@ func ruleConfigFromDefinition(definition ruleDefinition) (RuleConfig, bool) {
 		Name:    definition.Name,
 		Score:   definition.Score,
 		Enabled: enabled,
+		Margin:  0.2,
+		Alert:   definition.Alert == nil || *definition.Alert,
+	}
+	if definition.Margin != nil && *definition.Margin > 0 && *definition.Margin < 1 {
+		config.Margin = *definition.Margin
 	}
 	if definition.ThresholdAmount != nil {
 		config.ThresholdAmount = *definition.ThresholdAmount
@@ -532,12 +696,26 @@ func defaultRiskRulesFile() riskRulesFile {
 				ThresholdCount: intPtr(10),
 				Window:         "24h",
 			},
+			{Type: "structuring", Name: "STRUCTURING_BELOW_THRESHOLD", Score: 40, Enabled: boolPtr(true), ThresholdAmount: float64Ptr(10000.0), ThresholdCount: intPtr(3), Margin: float64Ptr(0.2), Window: "24h"},
+			{Type: "round_trip", Name: "ROUND_TRIP_EXCHANGE", Score: 30, Enabled: boolPtr(true), Window: "48h"},
+			{Type: "dormant_reactivation", Name: "DORMANT_REACTIVATION", Score: 20, Enabled: boolPtr(true), ThresholdAmount: float64Ptr(5000.0), Window: "4320h"},
 		},
 		CustomerRules: []ruleDefinition{
 			{Type: "insufficient_kyc_status", Name: "INSUFFICIENT_KYC_STATUS", Score: 45, Enabled: boolPtr(true)},
 			{Type: "inconsistent_profile", Name: "INCONSISTENT_KYC_PROFILE", Score: 35, Enabled: boolPtr(true)},
 			{Type: "business_activity", Name: "BUSINESS_ACTIVITY_PROFILE", Score: 15, Enabled: boolPtr(true)},
 			{Type: "expected_volume_exceeded", Name: "EXPECTED_VOLUME_EXCEEDED", Score: 30, Enabled: boolPtr(true)},
+			{Type: "missing_id_document", Name: "MISSING_ID_DOCUMENT", Score: 40, Enabled: boolPtr(true)},
+			{Type: "missing_id_photo", Name: "MISSING_ID_PHOTO", Score: 15, Enabled: boolPtr(true), Alert: boolPtr(false)},
+			{Type: "missing_phone", Name: "MISSING_PHONE", Score: 20, Enabled: boolPtr(true)},
+			{Type: "missing_address", Name: "MISSING_ADDRESS", Score: 5, Enabled: boolPtr(true), Alert: boolPtr(false)},
+			{Type: "duplicate_id_number", Name: "DUPLICATE_ID_NUMBER", Score: 35, Enabled: boolPtr(true)},
+			{Type: "expired_id_document", Name: "EXPIRED_ID_DOCUMENT", Score: 45, Enabled: boolPtr(true)},
+			{Type: "politically_exposed", Name: "POLITICALLY_EXPOSED_PERSON", Score: 35, Enabled: boolPtr(true)},
+			{Type: "sensitive_sector", Name: "SENSITIVE_SECTOR", Score: 25, Enabled: boolPtr(true)},
+			{Type: "third_party", Name: "ACTS_FOR_THIRD_PARTY", Score: 30, Enabled: boolPtr(true)},
+			{Type: "foreign_or_non_resident", Name: "FOREIGN_OR_NON_RESIDENT", Score: 15, Enabled: boolPtr(true), Alert: boolPtr(false)},
+			{Type: "kyc_review_due", Name: "KYC_REVIEW_DUE", Score: 20, Enabled: boolPtr(true), Alert: boolPtr(false)},
 		},
 	}
 }
