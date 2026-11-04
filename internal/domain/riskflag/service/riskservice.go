@@ -104,14 +104,22 @@ func (s *RiskService) AnalyzeTransactionAndCustomerWithTx(dbTx *sql.Tx, tx *tran
 	// 1. Analyse de la transaction individuelle
 	// La création d'un nouveau client et de sa transaction n'est pas commitée à ce stade.
 	// Le lire via la même transaction SQL est nécessaire pour voir cette nouvelle ligne.
-	customer, err := s.customerRepo.GetCustomerWithTx(dbTx, tx.CustomerID)
+	var customer *customerentity.Customer
+	var err error
+	if scoped, ok := s.customerRepo.(interface {
+		GetCustomerWithTxInStore(*sql.Tx, int, int) (*customerentity.Customer, error)
+	}); ok {
+		customer, err = scoped.GetCustomerWithTxInStore(dbTx, tx.CustomerID, tx.StoreID)
+	} else {
+		return fmt.Errorf("customer repository does not support store-scoped risk analysis")
+	}
 	if err != nil {
 		return fmt.Errorf("failed to get customer %d for risk analysis: %w", tx.CustomerID, err)
 	}
 
 	var kycProfile *customerservice.CustomerKYCProfile
 	if s.customerService != nil {
-		if profile, err := s.customerService.GetKYCProfile(customer.ID); err == nil {
+		if profile, err := s.customerService.GetKYCProfileInStoreWithTx(dbTx, customer.ID, tx.StoreID); err == nil {
 			kycProfile = profile
 		} else {
 			log.Printf("Warning: KYC profile unavailable for customer %d: %v", customer.ID, err)
@@ -119,6 +127,7 @@ func (s *RiskService) AnalyzeTransactionAndCustomerWithTx(dbTx *sql.Tx, tx *tran
 	}
 
 	recentTransactions, err := s.transactionRepo.ListTransactions(storage.TransactionFilter{
+		StoreID:    tx.StoreID,
 		CustomerID: customer.ID,
 		Since:      time.Now().AddDate(0, 0, -30),
 	})
@@ -152,6 +161,7 @@ func (s *RiskService) AnalyzeTransactionAndCustomerWithTx(dbTx *sql.Tx, tx *tran
 		flag.TransactionId = &transactionID
 		flag.TraderId = tx.TraderID
 		flag.CustomerId = tx.CustomerID
+		flag.StoreID = tx.StoreID
 		if err := s.riskFlagRepo.CreateRiskFlagWithTx(dbTx, flag); err != nil {
 			// Logguer l'erreur mais ne pas bloquer le flux principal
 			log.Printf("Warning: failed to create risk flag for transaction %d: %v", tx.ID, err)

@@ -8,13 +8,24 @@ import (
 	"net/http"
 )
 
+func (h *Handler) getKYCProfileInRequestStore(r *http.Request, customerID int) (*customerservice.CustomerKYCProfile, int, error) {
+	storeID, err := authenticatedStoreID(r)
+	if err != nil {
+		return nil, 0, err
+	}
+	if err := ensureCustomerInRequestStore(h.customerStore, r, customerID); err != nil {
+		return nil, 0, err
+	}
+	profile, err := h.customerService.GetKYCProfileInStoreWithTx(nil, customerID, storeID)
+	return profile, storeID, err
+}
+
 func (h *Handler) HandleGetKYCProfile(w http.ResponseWriter, r *http.Request) error {
 	id, err := pathID(r)
 	if err != nil {
 		return badRequest("invalid customer id", err)
 	}
-
-	profile, err := h.customerService.GetKYCProfile(id)
+	profile, _, err := h.getKYCProfileInRequestStore(r, id)
 	if err != nil {
 		return customerWriteError(err, "get KYC profile")
 	}
@@ -27,16 +38,16 @@ func (h *Handler) HandleUpdateKYCProfile(w http.ResponseWriter, r *http.Request)
 	if err != nil {
 		return badRequest("invalid customer id", err)
 	}
+	existing, _, err := h.getKYCProfileInRequestStore(r, id)
+	if err != nil {
+		return customerWriteError(err, "get KYC profile")
+	}
 
 	var profile customerservice.CustomerKYCProfile
 	if err := decodeJSON(r, &profile); err != nil {
 		return badRequest("invalid request body", err)
 	}
 	// Le statut se modifie exclusivement via PATCH /kyc/status.
-	existing, err := h.customerService.GetKYCProfile(id)
-	if err != nil {
-		return customerWriteError(err, "get KYC profile")
-	}
 	profile.KYCStatus = existing.KYCStatus
 	profile.LastVerificationDate = existing.LastVerificationDate
 	var updatedProfile *customerservice.CustomerKYCProfile
@@ -75,6 +86,10 @@ func (h *Handler) HandleUpdateKYCStatus(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		return badRequest("invalid customer id", err)
 	}
+	before, _, err := h.getKYCProfileInRequestStore(r, id)
+	if err != nil {
+		return customerWriteError(err, "get KYC profile")
+	}
 	var req UpdateKYCStatusRequest
 	if err := decodeJSON(r, &req); err != nil {
 		return badRequest("invalid request body", err)
@@ -85,10 +100,6 @@ func (h *Handler) HandleUpdateKYCStatus(w http.ResponseWriter, r *http.Request) 
 	}
 	if !permissions.Has(user.Roles, permissions.KYCVerify) {
 		return &HTTPError{StatusCode: http.StatusForbidden, Message: "insufficient permissions"}
-	}
-	before, err := h.customerService.GetKYCProfile(id)
-	if err != nil {
-		return customerWriteError(err, "get KYC profile")
 	}
 	var profile *customerservice.CustomerKYCProfile
 	if h.auditLogger != nil {
@@ -121,8 +132,12 @@ func (h *Handler) HandleTriggerKYCReassessment(w http.ResponseWriter, r *http.Re
 	if err != nil {
 		return badRequest("invalid customer id", err)
 	}
+	_, storeID, err := h.getKYCProfileInRequestStore(r, id)
+	if err != nil {
+		return customerWriteError(err, "get KYC profile")
+	}
 
-	customer, err := h.customerService.TriggerRiskReassessment(id)
+	customer, err := h.customerService.TriggerRiskReassessmentInStoreWithTx(nil, id, storeID)
 	if err != nil {
 		return customerWriteError(err, "trigger KYC risk reassessment")
 	}

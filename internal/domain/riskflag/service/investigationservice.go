@@ -30,13 +30,31 @@ func (s *InvestigationService) TransitionRiskFlag(flagID int, newStatus string, 
 }
 
 func (s *InvestigationService) TransitionRiskFlagWithTx(tx *sql.Tx, flagID int, newStatus string, changedBy int, note string, assignedTo *int) (*riskflagentity.RiskFlag, error) {
+	return s.TransitionRiskFlagInStoreWithTx(tx, flagID, 0, newStatus, changedBy, note, assignedTo)
+}
+
+func (s *InvestigationService) TransitionRiskFlagInStore(tx *sql.Tx, flagID, storeID int, newStatus string, changedBy int, note string, assignedTo *int) (*riskflagentity.RiskFlag, error) {
+	return s.TransitionRiskFlagInStoreWithTx(tx, flagID, storeID, newStatus, changedBy, note, assignedTo)
+}
+func (s *InvestigationService) TransitionRiskFlagInStoreWithTx(tx *sql.Tx, flagID, storeID int, newStatus string, changedBy int, note string, assignedTo *int) (*riskflagentity.RiskFlag, error) {
 	// Valider le statut
 	if !riskflagentity.IsValidRiskFlagStatus(newStatus) {
 		return nil, fmt.Errorf("invalid status: %s", newStatus)
 	}
 
 	// Effectuer la transition dans la base de données
-	updatedFlag, err := s.riskFlagRepo.UpdateRiskFlagStatus(tx, flagID, newStatus, changedBy, note, assignedTo)
+	var updatedFlag *riskflagentity.RiskFlag
+	var err error
+	if storeID > 0 {
+		scoped, ok := s.riskFlagRepo.(storage.ScopedRiskFlagStorage)
+		if !ok {
+			return nil, storage.ErrRiskFlagNotFound
+		}
+		updatedFlag, err = scoped.UpdateRiskFlagStatusInStore(tx, flagID, storeID, newStatus, changedBy, note, assignedTo)
+	} else {
+		// Legacy service entry point retained for non-HTTP internal workflows.
+		updatedFlag, err = s.riskFlagRepo.UpdateRiskFlagStatus(tx, flagID, newStatus, changedBy, note, assignedTo)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -47,4 +65,11 @@ func (s *InvestigationService) TransitionRiskFlagWithTx(tx *sql.Tx, flagID int, 
 // GetStatusHistory récupère l'historique des statuts d'un risk_flag.
 func (s *InvestigationService) GetStatusHistory(flagID int) ([]*riskflagentity.RiskFlagStatusHistory, error) {
 	return s.riskFlagRepo.ListRiskFlagStatusHistory(flagID)
+}
+
+func (s *InvestigationService) GetStatusHistoryInStore(flagID, storeID int) ([]*riskflagentity.RiskFlagStatusHistory, error) {
+	if scoped, ok := s.riskFlagRepo.(storage.ScopedRiskFlagStorage); ok {
+		return scoped.ListRiskFlagStatusHistoryInStore(flagID, storeID)
+	}
+	return nil, storage.ErrRiskFlagNotFound
 }

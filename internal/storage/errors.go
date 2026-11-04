@@ -14,4 +14,5 @@ var (
 	ErrTransactionNotFound     = errors.New("transaction not found")
 	ErrTraderNotFound          = errors.New("trader not found")
 	ErrLastActiveAdmin         = errors.New("cannot remove the last active administrator")
+	ErrIdentityConflict        = errors.New("identity conflicts with an existing person")
 )

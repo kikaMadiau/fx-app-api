@@ -79,7 +79,7 @@ func postgresConnStr() string {
 
 	// Avertissement pour les modes non sécurisés
 	if isProductionEnvironment() && (sslMode == "disable" || sslMode == "allow") {
-		fmt.Printf("⚠️  SECURITY WARNING: DB_SSLMODE=%s in production environment\n", sslMode)
+		fmt.Printf("SECURITY WARNING: DB_SSLMODE=%s in production environment\n", sslMode)
 		fmt.Println("   Database connections are NOT encrypted. Use 'require' or 'verify-full' instead.")
 	}
 
@@ -245,13 +245,13 @@ func CheckDatabaseSecurity() error {
 
 		// Recommander verify-full pour la production
 		if sslMode != "verify-full" {
-			fmt.Println("⚠️  RECOMMENDATION: Use DB_SSLMODE=verify-full in production for full certificate validation")
+			fmt.Println("RECOMMENDATION: Use DB_SSLMODE=verify-full in production for full certificate validation")
 		}
 	}
 
 	// Vérifier le mot de passe de la base de données
 	if os.Getenv("DB_PASSWORD") == "" && isProductionEnvironment() {
-		fmt.Println("⚠️  WARNING: DB_PASSWORD is empty in production environment")
+		fmt.Println("WARNING: DB_PASSWORD is empty in production environment")
 	}
 
 	return nil

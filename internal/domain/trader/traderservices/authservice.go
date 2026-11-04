@@ -5,6 +5,7 @@ import (
 	"fx-app-api/internal/domain/trader/entity"
 	"fx-app-api/internal/storage"
 	tokenservice "fx-app-api/internal/utils/services"
+	"fx-app-api/internal/utils/validation"
 	"strings"
 
 	"golang.org/x/crypto/bcrypt"
@@ -70,10 +71,39 @@ func HashPassword(password string) (string, error) {
 	return string(hash), nil
 }
 
+// NormalizeTraderIdentity applies the shared API and CLI validation rules.
+func NormalizeTraderIdentity(firstName, lastName, email, phone string) (string, string, error) {
+	firstName = strings.TrimSpace(firstName)
+	lastName = strings.TrimSpace(lastName)
+	email = strings.TrimSpace(email)
+	identity := struct {
+		FirstName string `validate:"required,name,min=2,max=100"`
+		LastName  string `validate:"required,name,min=2,max=100"`
+		Email     string `validate:"required,emailformat"`
+	}{FirstName: firstName, LastName: lastName, Email: email}
+	if errors := validation.ValidateRequest(identity); len(errors) > 0 {
+		if _, ok := errors["FirstName"]; ok {
+			return "", "", fmt.Errorf("supervisor first name is invalid")
+		}
+		if _, ok := errors["LastName"]; ok {
+			return "", "", fmt.Errorf("supervisor last name is invalid")
+		}
+		return "", "", fmt.Errorf("supervisor email is invalid")
+	}
+	normalizedPhone, err := storage.NormalizePhone(phone)
+	if err != nil {
+		return "", "", fmt.Errorf("invalid trader phone: %w", err)
+	}
+	if err := validation.Validate(struct {
+		Phone string `validate:"required,e164"`
+	}{Phone: normalizedPhone}); err != nil {
+		return "", "", fmt.Errorf("trader phone must be an international E.164 number: %w", err)
+	}
+	return email, normalizedPhone, nil
+}
+
 func displayName(trader *entity.Trader) string {
 	switch {
-	case strings.TrimSpace(trader.Name) != "":
-		return trader.Name
 	case strings.TrimSpace(trader.FirstName+" "+trader.LastName) != "":
 		return strings.TrimSpace(trader.FirstName + " " + trader.LastName)
 	default:

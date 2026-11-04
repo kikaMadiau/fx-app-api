@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // --- Handlers de Transaction ---
@@ -50,13 +51,14 @@ type CreateTransactionPayload struct {
 }
 
 type CreateTransactionCustomerRequest struct {
-	FullName  string `json:"full_name"`
-	FirstName string `json:"first_name"`
-	LastName  string `json:"last_name"`
-	IDNumber  string `json:"id_number"`
-	IDType    string `json:"id_type"`
-	Phone     string `json:"phone"`
-	Address   string `json:"address"`
+	FullName    string     `json:"full_name"`
+	FirstName   string     `json:"first_name"`
+	LastName    string     `json:"last_name"`
+	IDNumber    string     `json:"id_number"`
+	IDType      string     `json:"id_type"`
+	Phone       string     `json:"phone"`
+	Address     string     `json:"address"`
+	DateOfBirth *time.Time `json:"date_of_birth,omitempty"`
 }
 
 // TransactionListResponse est la page de résultats renvoyée par GET /transactions.
@@ -99,6 +101,11 @@ func (h *Handler) HandleCreateTransaction(w http.ResponseWriter, r *http.Request
 		TraderID:        req.TraderID,
 		CustomerID:      req.CustomerID,
 	}
+	storeID, err := authenticatedStoreID(r)
+	if err != nil {
+		return err
+	}
+	tx.StoreID = storeID
 
 	var dbTx *sql.Tx
 	var errCreate error
@@ -169,6 +176,10 @@ func (h *Handler) HandleListTransactions(w http.ResponseWriter, r *http.Request)
 		return err
 	}
 	filter = scopeTransactionFilter(filter, traderservices.GetUser(r))
+	filter.StoreID, err = authenticatedStoreID(r)
+	if err != nil {
+		return err
+	}
 
 	items, total, err := h.transactionStore.SearchTransactions(filter)
 	if err != nil {
@@ -189,7 +200,11 @@ func (h *Handler) HandleGetTransaction(w http.ResponseWriter, r *http.Request) e
 		return badRequest("invalid transaction id", err)
 	}
 
-	tx, err := h.transactionStore.GetTransaction(id)
+	storeID, storeErr := authenticatedStoreID(r)
+	if storeErr != nil {
+		return storeErr
+	}
+	tx, err := getTransactionInStore(h.transactionStore, id, storeID)
 	if err != nil {
 		return transactionWriteError(err, "get transaction")
 	}
@@ -200,14 +215,25 @@ func (h *Handler) HandleGetTransaction(w http.ResponseWriter, r *http.Request) e
 	return WriteJson(w, http.StatusOK, tx)
 }
 
+func getTransactionInStore(store storage.TransactionStorage, id, storeID int) (*transactionentity.Transaction, error) {
+	if scoped, ok := store.(storage.ScopedTransactionStorage); ok {
+		return scoped.GetTransactionInStore(id, storeID)
+	}
+	return nil, storage.ErrTransactionNotFound
+}
+
 func scopeTransactionFilter(filter storage.TransactionFilter, user *traderentity.Trader) storage.TransactionFilter {
-	if user != nil && strings.EqualFold(user.Roles, string(permissions.Trader)) {
+	if user != nil && !canReadWholeStoreTransactions(user) {
 		filter.TraderID = user.Id
 	}
 	return filter
 }
 func canReadTransaction(tx *transactionentity.Transaction, user *traderentity.Trader) bool {
-	return tx != nil && (user == nil || !strings.EqualFold(user.Roles, string(permissions.Trader)) || tx.TraderID == user.Id)
+	return tx != nil && (user == nil || canReadWholeStoreTransactions(user) || tx.TraderID == user.Id)
+}
+
+func canReadWholeStoreTransactions(user *traderentity.Trader) bool {
+	return containsRole(traderservices.RoleList(user), string(permissions.ComplianceOfficer)) || containsRole(traderservices.RoleList(user), string(permissions.Supervisor))
 }
 
 // validateTransactionRequest nettoie et valide les champs de la transaction (devises, type, statut)
@@ -316,6 +342,8 @@ func transactionFilterFromQuery(r *http.Request) (storage.TransactionFilter, err
 // explicites (404, 409, 400). Toute autre erreur reste une 500.
 func transactionWriteError(err error, action string) error {
 	switch {
+	case errors.Is(err, storage.ErrIdentityConflict):
+		return &HTTPError{StatusCode: http.StatusConflict, Code: "identity_conflict", Message: "phone is already associated with a different identity"}
 	case errors.Is(err, storage.ErrCustomerPhoneExists):
 		return conflict("customer with this phone already exists")
 	case errors.Is(err, storage.ErrCustomerIDNumberExists):
@@ -348,9 +376,6 @@ func customerFromTransactionRequest(req CreateTransactionCustomerRequest) (*cust
 	}
 
 	idNumber := strings.TrimSpace(req.IDNumber)
-	if idNumber == "" {
-		idNumber = normalizedPhone
-	}
 
 	idType, err := customerentity.NormalizeIDType(req.IDType)
 	if err != nil {
@@ -358,11 +383,12 @@ func customerFromTransactionRequest(req CreateTransactionCustomerRequest) (*cust
 	}
 
 	return &customerentity.Customer{
-		FullName: fullName,
-		IDNumber: idNumber,
-		IDType:   idType,
-		Phone:    normalizedPhone,
-		Address:  req.Address,
+		FullName:    fullName,
+		IDNumber:    idNumber,
+		IDType:      idType,
+		Phone:       normalizedPhone,
+		Address:     req.Address,
+		DateOfBirth: req.DateOfBirth,
 	}, nil
 }
 

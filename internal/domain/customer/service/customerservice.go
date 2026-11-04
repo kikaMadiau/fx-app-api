@@ -67,6 +67,7 @@ func (s KYCStatus) Valid() bool {
 type CustomerKYCProfile struct {
 	ID              int             `json:"id"`
 	CustomerID      int             `json:"customer_id"`
+	StoreID         int             `json:"store_id,omitempty"`
 	LegalNature     LegalNature     `json:"legal_nature"`
 	ActivityProfile ActivityProfile `json:"activity_profile"`
 	KYCStatus       KYCStatus       `json:"kyc_status"`
@@ -140,7 +141,7 @@ func (s *CustomerService) CreateCustomerWithKYC(customer *entity.Customer, kycPr
 
 	// 2. Client déjà connu (même téléphone) : on travaille avec l'existant
 	if strings.TrimSpace(customer.Phone) != "" {
-		existing, err := s.customerRepo.GetCustomerByPhone(customer.Phone)
+		existing, err := s.getCustomerByPhone(customer.Phone, customer.StoreID)
 		switch {
 		case err == nil:
 			return s.completeExistingCustomer(existing, kycProfile)
@@ -160,8 +161,24 @@ func (s *CustomerService) CreateCustomerWithKYC(customer *entity.Customer, kycPr
 		defer func() { _ = tx.Rollback() }()
 	}
 
-	// 4. Créer le client de base
-	if err := s.customerRepo.CreateCustomerWithTx(tx, customer); err != nil {
+	// 4. Resolve store-local customer first, then shared person identity, in the same transaction.
+	created := true
+	if resolver, ok := s.customerRepo.(interface {
+		FindOrCreateCustomerWithTx(*sql.Tx, *entity.Customer) (bool, error)
+	}); ok {
+		created, err = resolver.FindOrCreateCustomerWithTx(tx, customer)
+		if err != nil {
+			return nil, false, fmt.Errorf("failed to resolve customer identity: %w", err)
+		}
+		if !created {
+			if tx != nil {
+				_ = tx.Rollback()
+			}
+			return s.completeExistingCustomer(customer, kycProfile)
+		}
+	} else if customer.StoreID > 0 {
+		return nil, false, fmt.Errorf("customer repository does not support store-scoped identity resolution")
+	} else if err := s.customerRepo.CreateCustomerWithTx(tx, customer); err != nil {
 		if errors.Is(err, storage.ErrCustomerPhoneExists) {
 			// Un autre appel a créé ce client entre la vérification et l'insertion.
 			if tx != nil {
@@ -178,6 +195,7 @@ func (s *CustomerService) CreateCustomerWithKYC(customer *entity.Customer, kycPr
 
 	// 5. Lier le profil KYC au client nouvellement créé
 	kycProfile.CustomerID = customer.ID
+	kycProfile.StoreID = customer.StoreID
 	kycProfile.KYCStatus = Unverified // Le statut initial est toujours non vérifié
 
 	if s.kycProfileRepo != nil {
@@ -207,6 +225,18 @@ func (s *CustomerService) CreateCustomerWithKYC(customer *entity.Customer, kycPr
 	return customer, true, nil
 }
 
+func (s *CustomerService) getCustomerByPhone(phone string, storeID int) (*entity.Customer, error) {
+	if scoped, ok := s.customerRepo.(interface {
+		GetCustomerByPhoneInStore(string, int) (*entity.Customer, error)
+	}); ok {
+		return scoped.GetCustomerByPhoneInStore(phone, storeID)
+	}
+	if storeID > 0 {
+		return nil, storage.ErrCustomerNotFound
+	}
+	return s.customerRepo.GetCustomerByPhone(phone)
+}
+
 // completeExistingCustomer réutilise un client existant : son profil KYC est conservé tel quel
 // s'il existe, et créé à partir des informations reçues sinon.
 func (s *CustomerService) completeExistingCustomer(existing *entity.Customer, kycProfile *CustomerKYCProfile) (*entity.Customer, bool, error) {
@@ -223,6 +253,7 @@ func (s *CustomerService) completeExistingCustomer(existing *entity.Customer, ky
 	}
 
 	kycProfile.CustomerID = existing.ID
+	kycProfile.StoreID = existing.StoreID
 	kycProfile.KYCStatus = Unverified
 	if err := s.kycProfileRepo.CreateKYCProfile(kycProfile); err != nil {
 		return nil, false, fmt.Errorf("failed to create KYC profile: %w", err)
@@ -317,6 +348,7 @@ func (s *CustomerService) UpdateKYCProfileWithTx(tx *sql.Tx, customerID int, upd
 
 	updatedProfile.ID = existingProfile.ID
 	updatedProfile.CustomerID = customerID
+	updatedProfile.StoreID = existingProfile.StoreID
 	updatedProfile.CreatedAt = existingProfile.CreatedAt
 	if updatedProfile.KYCStatus == "" {
 		updatedProfile.KYCStatus = existingProfile.KYCStatus
@@ -379,6 +411,21 @@ func (s *CustomerService) GetKYCProfile(customerID int) (*CustomerKYCProfile, er
 	return profile, nil
 }
 
+// GetKYCProfileInStoreWithTx reads a store-local KYC profile, including uncommitted rows in tx.
+func (s *CustomerService) GetKYCProfileInStoreWithTx(tx *sql.Tx, customerID, storeID int) (*CustomerKYCProfile, error) {
+	if s.kycProfileRepo == nil || storeID <= 0 {
+		return nil, ErrKYCProfileNotFound
+	}
+	type scopedReader interface {
+		GetKYCProfileByCustomerIDWithTxInStore(*sql.Tx, int, int) (*CustomerKYCProfile, error)
+	}
+	repo, ok := s.kycProfileRepo.(scopedReader)
+	if !ok {
+		return nil, ErrKYCProfileNotFound
+	}
+	return repo.GetKYCProfileByCustomerIDWithTxInStore(tx, customerID, storeID)
+}
+
 // TriggerRiskReassessment recalcule le risque global d'un client à partir de son profil KYC courant.
 func (s *CustomerService) TriggerRiskReassessment(customerID int) (*entity.Customer, error) {
 	return s.TriggerRiskReassessmentWithTx(nil, customerID)
@@ -409,6 +456,33 @@ func (s *CustomerService) TriggerRiskReassessmentWithTx(tx *sql.Tx, customerID i
 
 	log.Printf("Risk reassessment for customer %d set to %s. Reasons: %v", customerID, riskLevel, reasons)
 
+	return customer, nil
+}
+
+func (s *CustomerService) TriggerRiskReassessmentInStoreWithTx(tx *sql.Tx, customerID, storeID int) (*entity.Customer, error) {
+	if s.kycProfileRepo == nil || storeID <= 0 {
+		return nil, ErrKYCProfileNotFound
+	}
+	scoped, ok := s.customerRepo.(interface {
+		GetCustomerWithTxInStore(*sql.Tx, int, int) (*entity.Customer, error)
+	})
+	if !ok {
+		return nil, storage.ErrCustomerIDNotFound
+	}
+	customer, err := scoped.GetCustomerWithTxInStore(tx, customerID, storeID)
+	if err != nil {
+		return nil, err
+	}
+	profile, err := s.GetKYCProfileInStoreWithTx(tx, customerID, storeID)
+	if err != nil {
+		return nil, err
+	}
+	riskScore, riskLevel, reasons := s.calculateInitialRisk(customer, profile)
+	customer.RiskScore, customer.RiskLevel = riskScore, riskLevel
+	if err := s.customerRepo.UpdateCustomerWithTx(tx, customer); err != nil {
+		return nil, err
+	}
+	log.Printf("Initial risk for customer %d set to %s. Reasons: %v", customerID, riskLevel, reasons)
 	return customer, nil
 }
 

@@ -26,7 +26,6 @@ type TraderLoginResponse struct {
 
 type TraderResponse struct {
 	ID              int                 `json:"id"`
-	Name            string              `json:"name"`
 	FirstName       string              `json:"first_name"`
 	LastName        string              `json:"last_name"`
 	Email           string              `json:"email"`
@@ -45,7 +44,6 @@ type TraderResponse struct {
 }
 
 type UpsertTraderRequest struct {
-	Name      string `json:"name"`
 	FirstName string `json:"first_name"`
 	LastName  string `json:"last_name"`
 	Email     string `json:"email"`
@@ -57,7 +55,6 @@ type UpsertTraderRequest struct {
 }
 
 type CreateTraderRequest struct {
-	Name      string `json:"name"`
 	FirstName string `json:"first_name"`
 	LastName  string `json:"last_name"`
 	Email     string `json:"email"`
@@ -75,7 +72,6 @@ func traderResponse(trader *traderentity.Trader) TraderResponse {
 	}
 	return TraderResponse{
 		ID:              trader.Id,
-		Name:            trader.Name,
 		FirstName:       trader.FirstName,
 		LastName:        trader.LastName,
 		Email:           trader.Email,
@@ -126,8 +122,9 @@ func (h *Handler) HandleCreateTrader(w http.ResponseWriter, r *http.Request) err
 	if err := decodeJSON(r, &req); err != nil {
 		return badRequest("invalid request body", err)
 	}
-	if strings.TrimSpace(req.Email) == "" {
-		return badRequest("email is required", nil)
+	email, phone, identityErr := traderauthservice.NormalizeTraderIdentity(req.FirstName, req.LastName, req.Email, req.Phone)
+	if identityErr != nil {
+		return badRequest("invalid trader identity", identityErr)
 	}
 	if strings.TrimSpace(req.Password) == "" {
 		return badRequest("password is required", nil)
@@ -149,7 +146,7 @@ func (h *Handler) HandleCreateTrader(w http.ResponseWriter, r *http.Request) err
 		return badRequest("invalid password", err)
 	}
 
-	trader := &traderentity.Trader{Name: req.Name, FirstName: req.FirstName, LastName: req.LastName, Email: strings.TrimSpace(req.Email), Phone: req.Phone, Status: req.Status, Roles: role, PasswordHash: passwordHash, StoreId: req.StoreID, IsActive: true}
+	trader := &traderentity.Trader{FirstName: strings.TrimSpace(req.FirstName), LastName: strings.TrimSpace(req.LastName), Email: email, Phone: phone, Status: req.Status, Roles: role, PasswordHash: passwordHash, StoreId: req.StoreID, IsActive: true}
 	if h.auditLogger != nil {
 		store, ok := h.traderStore.(transactionalTraderStore)
 		if !ok {
@@ -237,7 +234,6 @@ func (h *Handler) HandleUpdateTrader(w http.ResponseWriter, r *http.Request) err
 		}
 	}
 
-	existingTrader.Name = req.Name
 	existingTrader.FirstName = req.FirstName
 	existingTrader.LastName = req.LastName
 	existingTrader.Email = strings.TrimSpace(req.Email)

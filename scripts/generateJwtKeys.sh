@@ -23,7 +23,7 @@ PRIVATE_KEY_B64=$(cat "$OUTPUT_DIR/private.pem" | base64 | tr -d '\n')
 PUBLIC_KEY_B64=$(cat "$OUTPUT_DIR/public.pem" | base64 | tr -d '\n')
 
 echo ""
-echo "📋Configuration pour variables d'environnement:"
+echo "  Configuration pour variables d'environnement:"
 echo "================================================"
 echo ""
 echo "# Ajouter à votre fichier .env ou configuration de déploiement:"
@@ -54,5 +54,5 @@ chmod 644 "$OUTPUT_DIR/public.pem"
 echo " Permissions ajustées"
 
 echo ""
-echo "🎉 Génération terminée avec succès!"
+echo "   Génération terminée avec succès!"
 echo "   Les clés sont prêtes pour le déploiement."

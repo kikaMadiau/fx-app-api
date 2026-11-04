@@ -19,6 +19,7 @@ type RiskFlagStorage interface {
 }
 
 type RiskFlagFilter struct {
+	StoreID       int
 	TransactionID int
 	TraderID      int
 	CustomerID    int
@@ -28,6 +29,14 @@ type RiskFlagFilter struct {
 	AssignedTo    int
 	Limit         int
 	Offset        int
+}
+
+type ScopedRiskFlagStorage interface {
+	GetRiskFlagInStore(id, storeID int) (*entity.RiskFlag, error)
+	DeleteRiskFlagInStore(id, storeID int) error
+	DeleteRiskFlagWithTxInStore(tx *sql.Tx, id, storeID int) error
+	UpdateRiskFlagStatusInStore(tx *sql.Tx, flagID, storeID int, newStatus string, changedBy int, note string, assignedTo *int) (*entity.RiskFlag, error)
+	ListRiskFlagStatusHistoryInStore(flagID, storeID int) ([]*entity.RiskFlagStatusHistory, error)
 }
 
 type RiskFlagWithDetails struct {

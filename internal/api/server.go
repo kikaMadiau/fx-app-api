@@ -136,11 +136,13 @@ func registerProtectedRoutes(router chi.Router, h *handlers.Handler) {
 type ApiFunc func(http.ResponseWriter, *http.Request) error
 type ApiError struct {
 	Message string `json:"message"`
+	Code    string `json:"code,omitempty"`
 }
 
 type HTTPError struct {
 	StatusCode int
 	Message    string
+	Code       string
 	Err        error
 }
 

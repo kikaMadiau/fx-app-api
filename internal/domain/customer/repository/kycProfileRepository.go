@@ -59,13 +59,16 @@ func (r *kycProfileRepository) CreateKYCProfile(profile *customerservice.Custome
 
 // CreateKYCProfileWithTx insère un nouveau profil KYC, dans la transaction fournie si elle n'est pas nil.
 func (r *kycProfileRepository) CreateKYCProfileWithTx(tx *sql.Tx, profile *customerservice.CustomerKYCProfile) error {
+	if profile.StoreID <= 0 {
+		return fmt.Errorf("store_id is required")
+	}
 	query := `
 		INSERT INTO customer_kyc_profiles (
-			customer_id, legal_nature, activity_profile, kyc_status, profession, employer,
+			customer_id, store_id, legal_nature, activity_profile, kyc_status, profession, employer,
 			company_name, registration_number, source_of_funds, purpose_of_operations,
 			expected_volume, expected_frequency, last_verification_date, created_at, updated_at
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
 		) RETURNING id, created_at, updated_at`
 
 	now := time.Now()
@@ -74,6 +77,7 @@ func (r *kycProfileRepository) CreateKYCProfileWithTx(tx *sql.Tx, profile *custo
 
 	err := pickExecutor(r.store.DB(), tx).QueryRow(query,
 		profile.CustomerID,
+		profile.StoreID,
 		profile.LegalNature,
 		profile.ActivityProfile,
 		profile.KYCStatus,
@@ -104,8 +108,23 @@ func (r *kycProfileRepository) GetKYCProfileByCustomerID(customerID int) (*custo
 
 // GetKYCProfileByCustomerIDWithTx récupère le profil KYC d'un client, dans la transaction fournie si elle n'est pas nil.
 func (r *kycProfileRepository) GetKYCProfileByCustomerIDWithTx(tx *sql.Tx, customerID int) (*customerservice.CustomerKYCProfile, error) {
+	return r.getKYCProfileByCustomerIDWithTx(tx, customerID, 0)
+}
+
+func (r *kycProfileRepository) GetKYCProfileByCustomerIDInStore(customerID, storeID int) (*customerservice.CustomerKYCProfile, error) {
+	return r.GetKYCProfileByCustomerIDWithTxInStore(nil, customerID, storeID)
+}
+
+func (r *kycProfileRepository) GetKYCProfileByCustomerIDWithTxInStore(tx *sql.Tx, customerID, storeID int) (*customerservice.CustomerKYCProfile, error) {
+	if storeID <= 0 {
+		return nil, customerservice.ErrKYCProfileNotFound
+	}
+	return r.getKYCProfileByCustomerIDWithTx(tx, customerID, storeID)
+}
+
+func (r *kycProfileRepository) getKYCProfileByCustomerIDWithTx(tx *sql.Tx, customerID, storeID int) (*customerservice.CustomerKYCProfile, error) {
 	query := `
-		SELECT id, customer_id, legal_nature, activity_profile, kyc_status,
+		SELECT id, customer_id, store_id, legal_nature, activity_profile, kyc_status,
 			COALESCE(profession, ''),
 			COALESCE(employer, ''),
 			COALESCE(company_name, ''),
@@ -116,14 +135,15 @@ func (r *kycProfileRepository) GetKYCProfileByCustomerIDWithTx(tx *sql.Tx, custo
 			COALESCE(expected_frequency, 0),
 			last_verification_date, created_at, updated_at
 		FROM customer_kyc_profiles
-		WHERE customer_id = $1`
+		WHERE customer_id = $1 AND store_id=CASE WHEN $2=0 THEN (SELECT store_id FROM customers WHERE id=$1) ELSE $2 END`
 
 	profile := &customerservice.CustomerKYCProfile{}
 	var lastVerificationDate sql.NullTime
 
-	err := pickExecutor(r.store.DB(), tx).QueryRow(query, customerID).Scan(
+	err := pickExecutor(r.store.DB(), tx).QueryRow(query, customerID, storeID).Scan(
 		&profile.ID,
 		&profile.CustomerID,
+		&profile.StoreID,
 		&profile.LegalNature,
 		&profile.ActivityProfile,
 		&profile.KYCStatus,
@@ -174,7 +194,7 @@ func (r *kycProfileRepository) UpdateKYCProfileWithTx(tx *sql.Tx, profile *custo
 			expected_frequency = $11,
 			last_verification_date = $12,
 			updated_at = $13
-		WHERE id = $14 AND customer_id = $15`
+		WHERE id = $14 AND customer_id = $15 AND store_id=$16`
 
 	profile.UpdatedAt = time.Now()
 
@@ -194,6 +214,7 @@ func (r *kycProfileRepository) UpdateKYCProfileWithTx(tx *sql.Tx, profile *custo
 		profile.UpdatedAt,
 		profile.ID,
 		profile.CustomerID,
+		profile.StoreID,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to update KYC profile: %w", err)

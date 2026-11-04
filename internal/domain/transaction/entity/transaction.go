@@ -8,6 +8,7 @@ import (
 
 type Transaction struct {
 	ID              int        `json:"id"`
+	StoreID         int        `json:"store_id,omitempty"`
 	Amount          float64    `json:"amount"`
 	Currency        string     `json:"currency"`
 	TargetCurrency  string     `json:"target_currency,omitempty"`

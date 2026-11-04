@@ -25,6 +25,7 @@ func IsValidRiskFlagStatus(s string) bool {
 
 type RiskFlag struct {
 	ID             int        `json:"id"`
+	StoreID        int        `json:"store_id,omitempty"`
 	Flag           string     `json:"flag"`
 	Reason         string     `json:"reason"`
 	Score          float64    `json:"score"`

@@ -2,6 +2,7 @@ package middlewareInternal
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -70,6 +71,7 @@ func RequirePermission(requiredPermission string) func(http.Handler) http.Handle
 			}
 
 			if !(user.IsPlatformAdmin && requiredPermission == permissions.PlatformManageStores) && !permissions.Has(user.Roles, requiredPermission) {
+				log.Printf("permission denied: trader_id=%d roles=%q required_permission=%q method=%s path=%s", user.Id, user.Roles, requiredPermission, r.Method, r.URL.Path)
 				http.Error(w, `{"message": "Permissions insuffisantes"}`, http.StatusForbidden)
 				return
 			}
@@ -87,7 +89,7 @@ func RequirePermission(requiredPermission string) func(http.Handler) http.Handle
 
 func requiresValidStoreLicense(permission string) bool {
 	switch permission {
-	case permissions.CustomerCreate, permissions.CustomerUpdate, permissions.KYCUpdate, permissions.KYCVerify, permissions.TransactionCreate:
+	case permissions.CustomerCreate, permissions.CustomerUpdate, permissions.KYCUpdate, permissions.KYCVerify, permissions.KYCReassess, permissions.TransactionCreate:
 		return true
 	default:
 		return false

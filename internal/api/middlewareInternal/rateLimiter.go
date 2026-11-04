@@ -224,7 +224,7 @@ func (rl *RateLimiter) rateLimit(next http.Handler, countFailedResponses bool) h
 			writeJSONError(
 				w,
 				http.StatusTooManyRequests,
-				"Too many requests. Your IP has been temporarily blocked.",
+				"Too many requests.",
 			)
 
 			return
@@ -245,7 +245,7 @@ func (rl *RateLimiter) rateLimit(next http.Handler, countFailedResponses bool) h
 				writeJSONError(
 					w,
 					http.StatusTooManyRequests,
-					"Too many requests. Your IP has been temporarily blocked.",
+					"Too many requests.",
 				)
 
 				return

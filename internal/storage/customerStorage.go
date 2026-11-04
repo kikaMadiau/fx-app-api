@@ -7,11 +7,19 @@ import (
 
 // CustomerFilter décrit les critères de recherche et de pagination de la liste des clients.
 type CustomerFilter struct {
+	StoreID   int
 	Query     string // recherche partielle sur le nom, le téléphone et le numéro de pièce
 	KYCStatus string // statut KYC exact (UNVERIFIED, VERIFIED, ...)
 	RiskLevel string // niveau de risque exact (LOW, MEDIUM, HIGH, CRITICAL)
 	Limit     int
 	Offset    int
+}
+
+type ScopedCustomerStorage interface {
+	GetCustomerInStore(id, storeID int) (*entity.Customer, error)
+	GetCustomerWithTxInStore(tx *sql.Tx, id, storeID int) (*entity.Customer, error)
+	GetCustomerByPhoneInStore(phone string, storeID int) (*entity.Customer, error)
+	FindOrCreateCustomerWithTx(tx *sql.Tx, customer *entity.Customer) (bool, error)
 }
 
 type CustomerStorage interface {

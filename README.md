@@ -54,7 +54,6 @@ lit sur stdin le même objet JSON que l'API:
 ```bash
 go run ./cmd user create <<'JSON'
 {
-  "name": "Bureau Gombe",
   "first_name": "Jean",
   "last_name": "Kabila",
   "email": "jeank@example.com",
@@ -93,6 +92,13 @@ Au demarrage, l'application:
 | `DB_PASSWORD` | vide | Mot de passe PostgreSQL. |
 | `DB_NAME` | `forex_trader_kyc_db` | Nom de la base applicative. |
 | `DB_SSLMODE` | `prefer` en local, `require` en production | Mode SSL PostgreSQL. En production, privilégier `verify-full`. |
+| `LEGACY_STORE_NAME` | `Demo Maison de Change` | Nom du store utilisé pour rattacher les données historiques sans store. |
+| `LEGACY_STORE_BCC_LICENSE_NUMBER` | `DEMO-0001` | Agrément du store de migration. Remplacez cette valeur de démonstration par un agrément valide. |
+
+La migration de tenant crée ou retrouve ce store de façon idempotente, puis rattache
+les clients, profils KYC, transactions, alertes, historiques et traders sans store.
+Les administrateurs de plateforme restent sans store. Ces deux variables peuvent
+être définies avant le premier démarrage pour utiliser les informations du store réel.
 
 Exemple `.env`:
 
@@ -287,6 +293,18 @@ Chaque route métier exige un JWT valide et la permission indiquée. Les rôles 
 
 ## Catalogue Des Requetes JSON
 
+### Créer un store et son premier superviseur depuis le terminal
+
+La commande `make create-store` crée le store et son superviseur dans une transaction. Le mot de passe est généré automatiquement, affiché une fois après succès et doit être changé à la première connexion. Elle n'accepte aucun mot de passe en argument.
+
+```sh
+make create-store ARGS='--name "Bureau Gombe" --license "BCC-XXXX" \\
+  --supervisor-first-name Kika --supervisor-last-name Madiau \\
+  --supervisor-email sup@example.com --supervisor-phone +243800000000'
+```
+
+Ajoutez `--license-issued-at YYYY-MM-DD` et `--license-expires-at YYYY-MM-DD` pour les dates d'agrément, ou `--interactive` pour saisir les champs manquants. Équivalent direct : `go run ./cmd/createstore ...`.
+
 Cette section resume toutes les routes avec leurs payloads. Les routes `GET` et `DELETE` n'ont pas de body JSON.
 
 ### `POST /traders`
@@ -295,7 +313,6 @@ Body:
 
 ```json
 {
-  "name": "Bureau Gombe",
   "first_name": "Jean",
   "last_name": "Kabila",
   "email": "jean@example.com",
@@ -313,7 +330,6 @@ Response `201 Created`:
 ```json
 {
   "id": 1,
-  "name": "Bureau Gombe",
   "first_name": "Jean",
   "last_name": "Kabila",
   "email": "jean@example.com",
@@ -348,7 +364,6 @@ Response `200 OK`:
   "expires_in": 86400,
   "trader": {
     "id": 1,
-    "name": "Bureau Gombe",
     "first_name": "Jean",
     "last_name": "Kabila",
     "email": "jean@example.com",

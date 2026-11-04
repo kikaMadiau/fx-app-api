@@ -67,6 +67,17 @@ func (h *Handler) recordAudit(r *http.Request, action, resourceType string, reso
 	return h.auditLogger.Record(user.Id, action, resourceType, resourceID, before, after)
 }
 
+func authenticatedStoreID(r *http.Request) (int, error) {
+	user := traderauthservice.GetUser(r)
+	if user == nil {
+		return 0, &HTTPError{StatusCode: http.StatusUnauthorized, Message: "authentication required"}
+	}
+	if user.IsPlatformAdmin || user.StoreId <= 0 {
+		return 0, notFound("store not found")
+	}
+	return user.StoreId, nil
+}
+
 func (h *Handler) recordAuditWithTx(r *http.Request, tx *sql.Tx, action, resourceType string, resourceID int, before, after any) error {
 	if h.auditLogger == nil {
 		return nil
@@ -85,6 +96,7 @@ func (h *Handler) recordAuditWithTx(r *http.Request, tx *sql.Tx, action, resourc
 type HTTPError struct {
 	StatusCode int
 	Message    string
+	Code       string
 	Err        error
 }
 
@@ -124,6 +136,7 @@ func (e *HTTPError) HTTPStatusCode() int {
 }
 
 func (e *HTTPError) PublicMessage() string { return e.Message }
+func (e *HTTPError) PublicCode() string    { return e.Code }
 
 func WriteJson(w http.ResponseWriter, statusCode int, value any) error {
 	w.Header().Set("Content-Type", "application/json")
@@ -175,11 +188,12 @@ func optionalPositiveInt(rawValue, fieldName string) (int, error) {
 
 func customerFromRequest(req UpsertCustomerRequest) *customerentity.Customer {
 	return &customerentity.Customer{
-		FullName: req.FullName,
-		IDNumber: req.IDNumber,
-		IDType:   req.IDType,
-		Phone:    req.Phone,
-		Address:  req.Address,
+		FullName:    req.FullName,
+		IDNumber:    req.IDNumber,
+		IDType:      req.IDType,
+		Phone:       req.Phone,
+		Address:     req.Address,
+		DateOfBirth: req.DateOfBirth,
 	}
 }
 

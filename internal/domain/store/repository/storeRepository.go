@@ -47,7 +47,7 @@ func (r *StoreRepository) CreateWithSupervisor(store *storeentity.Store, member 
 	member.StoreId = store.ID
 	member.IsActive = true
 	member.Roles = "SUPERVISOR"
-	err = tx.QueryRow(`INSERT INTO traders(name,first_name,last_name,email,phone,status,role,roles,password_hash,store_id,is_active,must_change_password,created_at,updated_at) VALUES($1,$2,$3,$4,$5,'ACTIVE','SUPERVISOR',ARRAY['SUPERVISOR']::TEXT[],$6,$7,TRUE,TRUE,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP) RETURNING id,created_at,updated_at`, member.Name, member.FirstName, member.LastName, member.Email, member.Phone, member.PasswordHash, store.ID).Scan(&member.Id, &member.CreatedAt, &member.UpdatedAt)
+	err = tx.QueryRow(`INSERT INTO traders(first_name,last_name,email,phone,status,role,roles,password_hash,store_id,is_active,must_change_password,created_at,updated_at) VALUES($1,$2,$3,$4,'ACTIVE','SUPERVISOR',ARRAY['SUPERVISOR']::TEXT[],$5,$6,TRUE,TRUE,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP) RETURNING id,created_at,updated_at`, member.FirstName, member.LastName, member.Email, member.Phone, member.PasswordHash, store.ID).Scan(&member.Id, &member.CreatedAt, &member.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("create first store supervisor: %w", err)
 	}
@@ -137,7 +137,7 @@ func (r *StoreRepository) Update(id, actorID int, patch map[string]any) (*storee
 }
 
 func (r *StoreRepository) Members(storeID int) ([]*traderentity.Trader, error) {
-	rows, err := r.db.Query(`SELECT id,COALESCE(name,''),COALESCE(first_name,''),COALESCE(last_name,''),email,COALESCE(phone,''),status,array_to_string(roles,','),store_id,is_active,created_at,updated_at FROM traders WHERE store_id=$1 AND deleted_at IS NULL ORDER BY id`, storeID)
+	rows, err := r.db.Query(`SELECT id,COALESCE(first_name,''),COALESCE(last_name,''),email,COALESCE(phone,''),status,array_to_string(roles,','),store_id,is_active,created_at,updated_at FROM traders WHERE store_id=$1 AND deleted_at IS NULL ORDER BY id`, storeID)
 	if err != nil {
 		return nil, err
 	}
@@ -145,7 +145,7 @@ func (r *StoreRepository) Members(storeID int) ([]*traderentity.Trader, error) {
 	var list []*traderentity.Trader
 	for rows.Next() {
 		u := new(traderentity.Trader)
-		if err := rows.Scan(&u.Id, &u.Name, &u.FirstName, &u.LastName, &u.Email, &u.Phone, &u.Status, &u.Roles, &u.StoreId, &u.IsActive, &u.CreatedAt, &u.UpdatedAt); err != nil {
+		if err := rows.Scan(&u.Id, &u.FirstName, &u.LastName, &u.Email, &u.Phone, &u.Status, &u.Roles, &u.StoreId, &u.IsActive, &u.CreatedAt, &u.UpdatedAt); err != nil {
 			return nil, err
 		}
 		list = append(list, u)
@@ -174,7 +174,7 @@ func (r *StoreRepository) AddMember(storeID, actorID int, member *traderentity.T
 		member.Id = id
 	} else if errors.Is(err, sql.ErrNoRows) {
 		created = true
-		err = tx.QueryRow(`INSERT INTO traders(name,first_name,last_name,email,phone,status,role,roles,password_hash,store_id,is_active,must_change_password,created_at,updated_at) VALUES($1,$2,$3,$4,$5,'ACTIVE',$6,$7,$8,$9,TRUE,TRUE,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP) RETURNING id`, member.Name, member.FirstName, member.LastName, member.Email, member.Phone, firstRole(member.Roles), pq.Array(strings.Split(member.Roles, ",")), member.PasswordHash, storeID).Scan(&member.Id)
+		err = tx.QueryRow(`INSERT INTO traders(first_name,last_name,email,phone,status,role,roles,password_hash,store_id,is_active,must_change_password,created_at,updated_at) VALUES($1,$2,$3,$4,'ACTIVE',$5,$6,$7,$8,TRUE,TRUE,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP) RETURNING id`, member.FirstName, member.LastName, member.Email, member.Phone, firstRole(member.Roles), pq.Array(strings.Split(member.Roles, ",")), member.PasswordHash, storeID).Scan(&member.Id)
 	}
 	if err != nil {
 		return false, err

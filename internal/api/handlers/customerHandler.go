@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // --- Handlers de Customer / KYC ---
@@ -20,11 +21,12 @@ const (
 )
 
 type UpsertCustomerRequest struct {
-	FullName string `json:"full_name"`
-	IDNumber string `json:"id_number"`
-	IDType   string `json:"id_type"`
-	Phone    string `json:"phone"`
-	Address  string `json:"address"`
+	FullName    string     `json:"full_name"`
+	IDNumber    string     `json:"id_number"`
+	IDType      string     `json:"id_type"`
+	Phone       string     `json:"phone"`
+	Address     string     `json:"address"`
+	DateOfBirth *time.Time `json:"date_of_birth,omitempty"`
 }
 
 type CreateCustomerWithKYCRequest struct {
@@ -50,11 +52,21 @@ func (h *Handler) HandleCreateCustomer(w http.ResponseWriter, r *http.Request) e
 	}
 
 	customer := customerFromRequest(req)
-	if err := h.customerStore.CreateCustomer(customer); err != nil {
+	storeID, err := authenticatedStoreID(r)
+	if err != nil {
+		return err
+	}
+	customer.StoreID = storeID
+	profile := &customerservice.CustomerKYCProfile{LegalNature: customerservice.Individual, ActivityProfile: customerservice.Personal, KYCStatus: customerservice.Unverified}
+	saved, created, err := h.customerService.CreateCustomerWithKYC(customer, profile)
+	if err != nil {
 		return customerWriteError(err, "create customer")
 	}
-
-	return WriteJson(w, http.StatusCreated, customer)
+	status := http.StatusCreated
+	if !created {
+		status = http.StatusOK
+	}
+	return WriteJson(w, status, saved)
 }
 
 func (h *Handler) HandleCreateCustomerWithKYC(w http.ResponseWriter, r *http.Request) error {
@@ -67,6 +79,11 @@ func (h *Handler) HandleCreateCustomerWithKYC(w http.ResponseWriter, r *http.Req
 	}
 
 	customer := customerFromRequest(req.Customer)
+	storeID, err := authenticatedStoreID(r)
+	if err != nil {
+		return err
+	}
+	customer.StoreID = storeID
 	savedCustomer, created, err := h.customerService.CreateCustomerWithKYC(customer, &req.KYCProfile)
 	if err != nil {
 		return customerWriteError(err, "create customer with KYC")
@@ -87,6 +104,10 @@ func (h *Handler) HandleCreateCustomerWithKYC(w http.ResponseWriter, r *http.Req
 // Paramètres de requête (tous optionnels) : q, kyc_status, risk_level, limit, offset.
 func (h *Handler) HandleListCustomers(w http.ResponseWriter, r *http.Request) error {
 	filter, err := customerFilterFromQuery(r)
+	if err != nil {
+		return err
+	}
+	filter.StoreID, err = authenticatedStoreID(r)
 	if err != nil {
 		return err
 	}
@@ -116,7 +137,11 @@ func (h *Handler) HandleSearchCustomerByPhone(w http.ResponseWriter, r *http.Req
 		return badRequest("invalid phone", err)
 	}
 
-	customer, err := h.customerStore.GetCustomerByPhone(normalizedPhone)
+	storeID, err := authenticatedStoreID(r)
+	if err != nil {
+		return err
+	}
+	customer, err := getCustomerByPhoneInStore(h.customerStore, normalizedPhone, storeID)
 	if err != nil {
 		if errors.Is(err, storage.ErrCustomerNotFound) {
 			return notFound("no customer found with this phone")
@@ -133,7 +158,11 @@ func (h *Handler) HandleGetCustomer(w http.ResponseWriter, r *http.Request) erro
 		return badRequest("invalid customer id", err)
 	}
 
-	customer, err := h.customerStore.GetCustomer(id)
+	storeID, err := authenticatedStoreID(r)
+	if err != nil {
+		return err
+	}
+	customer, err := getCustomerInStore(h.customerStore, id, storeID)
 	if err != nil {
 		return customerWriteError(err, "get customer")
 	}
@@ -147,7 +176,11 @@ func (h *Handler) HandleUpdateCustomer(w http.ResponseWriter, r *http.Request) e
 		return badRequest("invalid customer id", err)
 	}
 
-	customer, err := h.customerStore.GetCustomer(id)
+	storeID, err := authenticatedStoreID(r)
+	if err != nil {
+		return err
+	}
+	customer, err := getCustomerInStore(h.customerStore, id, storeID)
 	if err != nil {
 		return customerWriteError(err, "get customer")
 	}
@@ -171,6 +204,30 @@ func (h *Handler) HandleUpdateCustomer(w http.ResponseWriter, r *http.Request) e
 	}
 
 	return WriteJson(w, http.StatusOK, customer)
+}
+
+func getCustomerInStore(store storage.CustomerStorage, id, storeID int) (*customerentity.Customer, error) {
+	if scoped, ok := store.(storage.ScopedCustomerStorage); ok {
+		return scoped.GetCustomerInStore(id, storeID)
+	}
+	return nil, storage.ErrCustomerIDNotFound
+}
+func getCustomerByPhoneInStore(store storage.CustomerStorage, phone string, storeID int) (*customerentity.Customer, error) {
+	if scoped, ok := store.(storage.ScopedCustomerStorage); ok {
+		return scoped.GetCustomerByPhoneInStore(phone, storeID)
+	}
+	return nil, storage.ErrCustomerNotFound
+}
+func ensureCustomerInRequestStore(store storage.CustomerStorage, r *http.Request, id int) error {
+	storeID, err := authenticatedStoreID(r)
+	if err != nil {
+		return err
+	}
+	_, err = getCustomerInStore(store, id, storeID)
+	if err != nil {
+		return customerWriteError(err, "get customer")
+	}
+	return nil
 }
 
 // normalizeCustomerRequest nettoie et valide le payload client : nom, numéro de pièce et
@@ -254,6 +311,8 @@ func customerFilterFromQuery(r *http.Request) (storage.CustomerFilter, error) {
 // explicites (404, 409, 400). Toute autre erreur reste une 500.
 func customerWriteError(err error, action string) error {
 	switch {
+	case errors.Is(err, storage.ErrIdentityConflict):
+		return &HTTPError{StatusCode: http.StatusConflict, Code: "identity_conflict", Message: "phone is already associated with a different identity"}
 	case errors.Is(err, storage.ErrCustomerPhoneExists):
 		return conflict("customer with this phone already exists")
 	case errors.Is(err, storage.ErrCustomerIDNumberExists):

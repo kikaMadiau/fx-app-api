@@ -32,6 +32,7 @@ type TransactionStorage interface {
 }
 
 type TransactionFilter struct {
+	StoreID    int
 	CustomerID int
 	TraderID   int
 	Since      time.Time
@@ -43,4 +44,8 @@ type TransactionFilter struct {
 	RiskLevel string
 	Limit     int
 	Offset    int
+}
+
+type ScopedTransactionStorage interface {
+	GetTransactionInStore(id, storeID int) (*entity.Transaction, error)
 }

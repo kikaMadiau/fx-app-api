@@ -23,7 +23,7 @@ const (
 	transactionColumns = `t.id, t.amount, t.currency, COALESCE(t.target_currency, ''),
 		       COALESCE(t.type, ''), COALESCE(t.rate, 0),
 		       COALESCE(t.converted_amount, 0), COALESCE(t.risk_level, ''), COALESCE(t.risk_score, 0),
-		       COALESCE(t.status, ''), t.created_at, t.updated_at, t.deleted_at, t.trader_id, t.customer_id`
+		       COALESCE(t.status, ''), t.created_at, t.updated_at, t.deleted_at, t.trader_id, t.customer_id, t.store_id`
 )
 
 // sqlExecutor est implémenté à la fois par *sql.DB et *sql.Tx : il permet d'écrire une seule fois
@@ -120,6 +120,9 @@ func (r *TransactionRepository) CreateTransaction(tx *entity.Transaction) error 
 // CreateTransactionWithTx insère une nouvelle transaction, dans la transaction SQL fournie si elle n'est pas nil.
 // Elle renvoie storage.ErrTraderNotFound ou storage.ErrCustomerIDNotFound si le trader ou le client n'existe pas.
 func (r *TransactionRepository) CreateTransactionWithTx(dbTx *sql.Tx, tx *entity.Transaction) error {
+	if tx.StoreID <= 0 {
+		return fmt.Errorf("store_id is required")
+	}
 	if err := insertTransaction(pickExecutor(r.store.DB(), dbTx), tx); err != nil {
 		return mapTransactionWriteError("create transaction", err)
 	}
@@ -137,29 +140,29 @@ func (r *TransactionRepository) CreateTransactionWithNewCustomer(tx *entity.Tran
 		return nil, err
 	}
 	customer.Phone = normalizedPhone
-	if strings.TrimSpace(customer.IDNumber) == "" {
-		customer.IDNumber = normalizedPhone
-	}
 
 	dbTx, err := r.store.DB().Begin()
 	if err != nil {
 		return nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 
-	existing, err := selectCustomerByPhone(dbTx, normalizedPhone, true)
-	switch {
-	case err == nil:
-		*customer = *existing
-	case errors.Is(err, sql.ErrNoRows):
-		// La création passe par le repository client : même normalisation et mêmes erreurs d'unicité
-		// (téléphone ou numéro de pièce déjà utilisé) que partout ailleurs.
-		if err := customerrepository.NewCustomerRepository(r.store).CreateCustomerWithTx(dbTx, customer); err != nil {
-			_ = dbTx.Rollback()
-			return nil, err
-		}
-	default:
+	customer.StoreID = tx.StoreID
+	customerRepo := customerrepository.NewCustomerRepository(r.store)
+	resolver, ok := customerRepo.(storage.ScopedCustomerStorage)
+	if !ok {
 		_ = dbTx.Rollback()
-		return nil, fmt.Errorf("failed to check existing customer: %w", err)
+		return nil, fmt.Errorf("customer repository does not support scoped identity resolution")
+	}
+	created, err := resolver.FindOrCreateCustomerWithTx(dbTx, customer)
+	if err != nil {
+		_ = dbTx.Rollback()
+		return nil, fmt.Errorf("failed to resolve customer identity: %w", err)
+	}
+	if created {
+		if _, err := dbTx.Exec(`INSERT INTO customer_kyc_profiles(customer_id,store_id,legal_nature,activity_profile,kyc_status,expected_volume,expected_frequency,created_at,updated_at) VALUES($1,$2,'INDIVIDUAL','PERSONAL','UNVERIFIED',0,0,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`, customer.ID, tx.StoreID); err != nil {
+			_ = dbTx.Rollback()
+			return nil, fmt.Errorf("create initial KYC profile: %w", err)
+		}
 	}
 
 	tx.CustomerID = customer.ID
@@ -185,7 +188,7 @@ func (r *TransactionRepository) CreateTransactionForExistingCustomerPhone(tx *en
 		return nil, nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 
-	customer, err := selectCustomerByPhone(dbTx, normalizedPhone, true)
+	customer, err := selectCustomerByPhone(dbTx, normalizedPhone, tx.StoreID, true)
 	if err != nil {
 		_ = dbTx.Rollback()
 		if errors.Is(err, sql.ErrNoRows) {
@@ -217,7 +220,7 @@ func (r *TransactionRepository) UpdateTransactionWithTx(tx *sql.Tx, txToUpdate *
 			amount = $1, currency = $2, target_currency = $3, type = $4,
 			rate = $5, converted_amount = $6, risk_level = $7, risk_score = $8,
 			status = $9, trader_id = $10, customer_id = $11, updated_at = $12
-		WHERE id = $13 AND deleted_at IS NULL`
+		WHERE id = $13 AND store_id = $14 AND deleted_at IS NULL`
 
 	txToUpdate.UpdatedAt = time.Now()
 
@@ -235,6 +238,7 @@ func (r *TransactionRepository) UpdateTransactionWithTx(tx *sql.Tx, txToUpdate *
 		txToUpdate.CustomerID,
 		txToUpdate.UpdatedAt,
 		txToUpdate.ID,
+		txToUpdate.StoreID,
 	)
 	if err != nil {
 		return mapTransactionWriteError("update transaction", err)
@@ -268,6 +272,18 @@ func (r *TransactionRepository) GetTransaction(id int) (*entity.Transaction, err
 	return tx, nil
 }
 
+func (r *TransactionRepository) GetTransactionInStore(id, storeID int) (*entity.Transaction, error) {
+	query := `SELECT ` + transactionColumns + ` FROM transactions t WHERE t.id=$1 AND t.store_id=$2 AND t.deleted_at IS NULL`
+	tx, err := scanTransaction(r.store.DB().QueryRow(query, id, storeID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, storage.ErrTransactionNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return tx, nil
+}
+
 // ListTransactions liste les transactions, avec filtres optionnels.
 func (r *TransactionRepository) ListTransactions(filter storage.TransactionFilter) ([]*entity.Transaction, error) {
 	return r.ListTransactionsWithTx(nil, filter)
@@ -275,6 +291,9 @@ func (r *TransactionRepository) ListTransactions(filter storage.TransactionFilte
 
 // ListTransactionsWithTx liste les transactions dans la transaction SQL fournie si elle n'est pas nil.
 func (r *TransactionRepository) ListTransactionsWithTx(dbTx *sql.Tx, filter storage.TransactionFilter) ([]*entity.Transaction, error) {
+	if filter.StoreID <= 0 {
+		return nil, fmt.Errorf("store_id is required")
+	}
 	conditions := []string{"t.deleted_at IS NULL"}
 	args := []any{}
 
@@ -285,6 +304,9 @@ func (r *TransactionRepository) ListTransactionsWithTx(dbTx *sql.Tx, filter stor
 
 	if filter.CustomerID > 0 {
 		conditions = append(conditions, "t.customer_id = "+addArg(filter.CustomerID))
+	}
+	if filter.StoreID > 0 {
+		conditions = append(conditions, "t.store_id = "+addArg(filter.StoreID))
 	}
 	if filter.TraderID > 0 {
 		conditions = append(conditions, "t.trader_id = "+addArg(filter.TraderID))
@@ -322,6 +344,9 @@ func (r *TransactionRepository) ListTransactionsWithTx(dbTx *sql.Tx, filter stor
 // SearchTransactions renvoie une page de transactions actives avec le client associé,
 // ainsi que le nombre total de résultats correspondant aux filtres.
 func (r *TransactionRepository) SearchTransactions(filter storage.TransactionFilter) ([]*entity.TransactionListItem, int, error) {
+	if filter.StoreID <= 0 {
+		return nil, 0, fmt.Errorf("store_id is required")
+	}
 	conditions := []string{"t.deleted_at IS NULL"}
 	args := []any{}
 
@@ -345,6 +370,9 @@ func (r *TransactionRepository) SearchTransactions(filter storage.TransactionFil
 
 		conditions = append(conditions, "("+clause+")")
 	}
+	if filter.StoreID > 0 {
+		conditions = append(conditions, "t.store_id = "+addArg(filter.StoreID))
+	}
 	if filter.CustomerID > 0 {
 		conditions = append(conditions, "t.customer_id = "+addArg(filter.CustomerID))
 	}
@@ -367,7 +395,7 @@ func (r *TransactionRepository) SearchTransactions(filter storage.TransactionFil
 	where := strings.Join(conditions, " AND ")
 	const fromClause = `
 		FROM transactions t
-		JOIN customers c ON c.id = t.customer_id`
+		JOIN customers c ON c.id = t.customer_id AND c.store_id=t.store_id`
 
 	var total int
 	if err := r.store.DB().QueryRow("SELECT COUNT(*) "+fromClause+" WHERE "+where, args...).Scan(&total); err != nil {
@@ -406,7 +434,7 @@ func (r *TransactionRepository) SearchTransactions(filter storage.TransactionFil
 		if err := rows.Scan(
 			&tx.ID, &tx.Amount, &tx.Currency, &tx.TargetCurrency, &tx.Type, &tx.Rate,
 			&tx.ConvertedAmount, &tx.RiskLevel, &tx.RiskScore, &tx.Status, &tx.CreatedAt, &tx.UpdatedAt, &tx.DeletedAt,
-			&tx.TraderID, &tx.CustomerID,
+			&tx.TraderID, &tx.CustomerID, &tx.StoreID,
 			&item.CustomerName, &item.CustomerPhone, &item.CustomerIDType, &item.CustomerIDNumber,
 		); err != nil {
 			return nil, 0, fmt.Errorf("failed to scan transaction: %w", err)
@@ -430,7 +458,7 @@ func scanTransaction(row rowScanner) (*entity.Transaction, error) {
 	err := row.Scan(
 		&tx.ID, &tx.Amount, &tx.Currency, &tx.TargetCurrency, &tx.Type, &tx.Rate,
 		&tx.ConvertedAmount, &tx.RiskLevel, &tx.RiskScore, &tx.Status, &tx.CreatedAt, &tx.UpdatedAt, &tx.DeletedAt,
-		&tx.TraderID, &tx.CustomerID,
+		&tx.TraderID, &tx.CustomerID, &tx.StoreID,
 	)
 	if err != nil {
 		return nil, err
@@ -447,30 +475,37 @@ func insertTransaction(q rowQuerier, tx *entity.Transaction) error {
 	query := `
 		INSERT INTO transactions (
 			amount, currency, target_currency, type, rate, converted_amount,
-			risk_level, risk_score, status, trader_id, customer_id, created_at, updated_at
+			risk_level, risk_score, status, trader_id, customer_id, store_id, created_at, updated_at
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
 		) RETURNING id, created_at, updated_at`
 
 	tx.CreatedAt = time.Now()
 	tx.UpdatedAt = time.Now()
 
-	return q.QueryRow(query, tx.Amount, tx.Currency, tx.TargetCurrency, tx.Type, tx.Rate, tx.ConvertedAmount, tx.RiskLevel, tx.RiskScore, tx.Status, tx.TraderID, tx.CustomerID, tx.CreatedAt, tx.UpdatedAt).Scan(&tx.ID, &tx.CreatedAt, &tx.UpdatedAt)
+	var customerStore int
+	if err := q.QueryRow(`SELECT store_id FROM customers WHERE id=$1 AND store_id=$2 AND deleted_at IS NULL`, tx.CustomerID, tx.StoreID).Scan(&customerStore); err != nil {
+		return storage.ErrCustomerIDNotFound
+	}
+	if customerStore != tx.StoreID {
+		return storage.ErrCustomerIDNotFound
+	}
+	return q.QueryRow(query, tx.Amount, tx.Currency, tx.TargetCurrency, tx.Type, tx.Rate, tx.ConvertedAmount, tx.RiskLevel, tx.RiskScore, tx.Status, tx.TraderID, tx.CustomerID, tx.StoreID, tx.CreatedAt, tx.UpdatedAt).Scan(&tx.ID, &tx.CreatedAt, &tx.UpdatedAt)
 }
 
-func selectCustomerByPhone(q rowQuerier, normalizedPhone string, lock bool) (*customerentity.Customer, error) {
+func selectCustomerByPhone(q rowQuerier, normalizedPhone string, storeID int, lock bool) (*customerentity.Customer, error) {
 	query := `
-		SELECT id, full_name, id_number, COALESCE(id_type, ''), COALESCE(phone, ''),
+		SELECT id,person_id,store_id,full_name, id_number, COALESCE(id_type, ''), COALESCE(phone, ''),
 		       COALESCE(address, ''), created_at, updated_at, deleted_at,
 		       COALESCE(risk_level, ''), COALESCE(risk_score, 0)
 		FROM customers
-		WHERE phone = $1 AND deleted_at IS NULL`
+		WHERE phone = $1 AND store_id=$2 AND deleted_at IS NULL`
 	if lock {
 		query += " FOR UPDATE"
 	}
 
 	customer := &customerentity.Customer{}
-	err := q.QueryRow(query, normalizedPhone).Scan(&customer.ID, &customer.FullName, &customer.IDNumber, &customer.IDType, &customer.Phone, &customer.Address, &customer.CreatedAt, &customer.UpdatedAt, &customer.DeletedAt, &customer.RiskLevel, &customer.RiskScore)
+	err := q.QueryRow(query, normalizedPhone, storeID).Scan(&customer.ID, &customer.PersonID, &customer.StoreID, &customer.FullName, &customer.IDNumber, &customer.IDType, &customer.Phone, &customer.Address, &customer.CreatedAt, &customer.UpdatedAt, &customer.DeletedAt, &customer.RiskLevel, &customer.RiskScore)
 	if err != nil {
 		return nil, err
 	}

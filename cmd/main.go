@@ -58,9 +58,6 @@ func main() {
 	if err := traderRepo.Init(); err != nil {
 		log.Fatalf("Failed to initialize trader repository: %v", err)
 	}
-	if err := bootstrapAdmin(traderRepo); err != nil {
-		log.Fatalf("Failed to bootstrap administrator: %v", err)
-	}
 
 	customerRepo := customerrepository.NewCustomerRepository(store)
 	if err := customerRepo.Init(); err != nil {
@@ -83,6 +80,9 @@ func main() {
 	}
 	if err := storage.InitTenantSchema(store.DB()); err != nil {
 		log.Fatalf("Failed to initialize tenant schema: %v", err)
+	}
+	if err := bootstrapAdmin(traderRepo); err != nil {
+		log.Fatalf("Failed to bootstrap administrator: %v", err)
 	}
 
 	// Initialiser les services métier
@@ -123,7 +123,6 @@ func runUserCommand(args []string) error {
 		return fmt.Errorf("usage: fx-app user create < user.json")
 	}
 	var req struct {
-		Name      string `json:"name"`
 		FirstName string `json:"first_name"`
 		LastName  string `json:"last_name"`
 		Email     string `json:"email"`
@@ -178,7 +177,7 @@ func runUserCommand(args []string) error {
 		isActive = *req.IsActive
 	}
 	trader := &traderentity.Trader{
-		Name: req.Name, FirstName: req.FirstName, LastName: req.LastName,
+		FirstName: req.FirstName, LastName: req.LastName,
 		Email: strings.TrimSpace(req.Email), Phone: req.Phone, Status: status,
 		Roles: string(role), PasswordHash: hash, StoreId: req.StoreID, IsActive: isActive,
 	}

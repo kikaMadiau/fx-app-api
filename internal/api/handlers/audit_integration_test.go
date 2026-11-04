@@ -75,7 +75,7 @@ func TestPostgresTraderMutationAndAuditAreAtomic(t *testing.T) {
 		return h
 	}
 	invokeCreate := func(h *Handler, email string) error {
-		req := httptest.NewRequest("POST", "/traders", strings.NewReader(`{"email":"`+email+`","password":"integration-password-123","role":"TRADER"}`))
+		req := httptest.NewRequest("POST", "/traders", strings.NewReader(`{"first_name":"Integration","last_name":"Trader","email":"`+email+`","phone":"+243800000000","password":"integration-password-123","role":"TRADER"}`))
 		req = req.WithContext(traderservices.WithUser(req.Context(), actor))
 		return h.HandleCreateTrader(httptest.NewRecorder(), req)
 	}

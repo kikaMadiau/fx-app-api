@@ -7,17 +7,20 @@ import (
 )
 
 type Customer struct {
-	ID        int        `json:"id"`
-	FullName  string     `json:"full_name"`
-	IDNumber  string     `json:"id_number"`
-	IDType    string     `json:"id_type"`
-	Phone     string     `json:"phone"`
-	Address   string     `json:"address"`
-	CreatedAt time.Time  `json:"created_at"`
-	UpdatedAt time.Time  `json:"updated_at"`
-	DeletedAt *time.Time `json:"deleted_at,omitempty"`
-	RiskLevel string     `json:"risk_level,omitempty"`
-	RiskScore float64    `json:"risk_score"`
+	ID          int        `json:"id"`
+	PersonID    int        `json:"-"`
+	StoreID     int        `json:"store_id,omitempty"`
+	FullName    string     `json:"full_name"`
+	IDNumber    string     `json:"id_number"`
+	IDType      string     `json:"id_type"`
+	Phone       string     `json:"phone"`
+	Address     string     `json:"address"`
+	DateOfBirth *time.Time `json:"date_of_birth,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
+	DeletedAt   *time.Time `json:"deleted_at,omitempty"`
+	RiskLevel   string     `json:"risk_level,omitempty"`
+	RiskScore   float64    `json:"risk_score"`
 }
 
 // CustomerSummary est la vue « liste » d'un client : ses données de base enrichies

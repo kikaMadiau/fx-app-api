@@ -12,12 +12,14 @@ type LoginRequest struct {
 
 // CreateTraderRequest validation pour la création de trader
 type CreateTraderRequest struct {
-	Email    string `json:"email" validate:"required,emailformat"`
-	Password string `json:"password" validate:"required,strongpassword,min=8"`
-	Name     string `json:"name" validate:"required,name,min=2,max=100"`
-	Role     string `json:"role" validate:"omitempty,oneof=TRADER COMPLIANCE_OFFICER SUPERVISOR ADMIN"`
-	Status   string `json:"status,omitempty" validate:"omitempty,oneof=ACTIVE INACTIVE SUSPENDED"`
-	StoreID  int    `json:"store_id,omitempty" validate:"omitempty,gt=0"`
+	FirstName string `json:"first_name" validate:"required,name,min=2,max=100"`
+	LastName  string `json:"last_name" validate:"required,name,min=2,max=100"`
+	Email     string `json:"email" validate:"required,emailformat"`
+	Phone     string `json:"phone" validate:"required,e164"`
+	Password  string `json:"password" validate:"required,strongpassword,min=8"`
+	Role      string `json:"role" validate:"omitempty,oneof=TRADER COMPLIANCE_OFFICER SUPERVISOR ADMIN"`
+	Status    string `json:"status,omitempty" validate:"omitempty,oneof=ACTIVE INACTIVE SUSPENDED"`
+	StoreID   int    `json:"store_id,omitempty" validate:"omitempty,gt=0"`
 }
 
 // CreateCustomerRequest validation pour la création de client

@@ -21,7 +21,7 @@ else
     echo "Fichier $ENV_FILE non trouvé, utilisation des variables d'environnement actuelles"
 fi
 
-# Surcharger DB_SSLMODE si spécifié
+# Surcharger DB_SSLMODE si spécifiée
 if [ "$SSL_MODE" != "prefer" ]; then
     export DB_SSLMODE="$SSL_MODE"
     echo "DB_SSLMODE défini à: $SSL_MODE"
