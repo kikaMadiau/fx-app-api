@@ -11,8 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/lib/pq"
 )
 
 const (
@@ -489,8 +487,7 @@ func selectCustomerByPhone(q rowQuerier, normalizedPhone string, storeID int, lo
 // mapTransactionWriteError traduit une clé étrangère violée (trader ou client inexistant) en erreur
 // métier explicite. Les autres erreurs sont simplement enveloppées.
 func mapTransactionWriteError(action string, err error) error {
-	var pqErr *pq.Error
-	if errors.As(err, &pqErr) && pqErr.Code == "23503" {
+	if pqErr, ok := storage.PostgresError(err); ok && pqErr.Code == "23503" {
 		switch pqErr.Constraint {
 		case "fk_trader":
 			return fmt.Errorf("failed to %s: %w", action, storage.ErrTraderNotFound)

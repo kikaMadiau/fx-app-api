@@ -9,8 +9,6 @@ import (
 	"fx-app-api/internal/storage"
 	"strings"
 	"time"
-
-	"github.com/lib/pq"
 )
 
 const (
@@ -454,8 +452,7 @@ func normalizeCustomerPhone(customer *entity.Customer) error {
 // mapCustomerWriteError traduit une violation d'unicité en erreur métier explicite
 // (téléphone ou numéro de pièce déjà utilisé). Les autres erreurs sont simplement enveloppées.
 func mapCustomerWriteError(action string, err error) error {
-	var pqErr *pq.Error
-	if errors.As(err, &pqErr) && pqErr.Code == "23505" {
+	if pqErr, ok := storage.PostgresError(err); ok && pqErr.Code == "23505" {
 		switch {
 		case strings.Contains(pqErr.Constraint, "phone"):
 			return fmt.Errorf("failed to %s: %w", action, storage.ErrCustomerPhoneExists)

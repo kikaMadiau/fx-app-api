@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/lib/pq"
+	"fx-app-api/internal/storage"
 )
 
 func WriteJson(w http.ResponseWriter, statusCode int, value any) error {
@@ -78,12 +78,12 @@ func writeAPIError(w http.ResponseWriter, err error) {
 }
 
 func sqlConstraintHTTPError(err error) (int, string, bool) {
-	var pqErr *pq.Error
-	if !errors.As(err, &pqErr) {
+	code := storage.PostgresErrorCode(err)
+	if code == "" {
 		return 0, "", false
 	}
 
-	switch pqErr.Code {
+	switch code {
 	case "23505":
 		return http.StatusConflict, "duplicate value violates unique constraint", true
 	case "23503":
@@ -95,7 +95,7 @@ func sqlConstraintHTTPError(err error) (int, string, bool) {
 	case "23P01":
 		return http.StatusConflict, "request conflicts with an existing record", true
 	default:
-		if strings.HasPrefix(string(pqErr.Code), "23") {
+		if strings.HasPrefix(code, "23") {
 			return http.StatusBadRequest, "request violates database constraint", true
 		}
 	}

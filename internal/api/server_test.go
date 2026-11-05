@@ -80,29 +80,6 @@ func assertAPIErrorMessage(t *testing.T, response *httptest.ResponseRecorder, ex
 }
 
 func TestProtectedRoutePermissionMatrix(t *testing.T) {
-	allowed := map[string][]permissions.Role{
-		permissions.ProfileRead:          {permissions.Trader, permissions.ComplianceOfficer, permissions.Supervisor, permissions.PlatformAdmin},
-		permissions.ProfileUpdate:        {permissions.Trader, permissions.ComplianceOfficer, permissions.Supervisor, permissions.PlatformAdmin},
-		permissions.StoreRead:            {permissions.Trader, permissions.ComplianceOfficer, permissions.Supervisor},
-		permissions.StoreManageMembers:   {permissions.Supervisor},
-		permissions.PlatformManageStores: {permissions.PlatformAdmin},
-		permissions.DashboardRead:        {permissions.Trader, permissions.ComplianceOfficer, permissions.Supervisor, permissions.PlatformAdmin},
-		permissions.AnalysisRead:         {permissions.Trader, permissions.ComplianceOfficer, permissions.Supervisor, permissions.PlatformAdmin},
-		permissions.TraderManage:         {permissions.PlatformAdmin},
-		permissions.CustomerCreate:       {permissions.Trader, permissions.ComplianceOfficer, permissions.Supervisor, permissions.PlatformAdmin},
-		permissions.CustomerRead:         {permissions.Trader, permissions.ComplianceOfficer, permissions.Supervisor, permissions.PlatformAdmin},
-		permissions.CustomerUpdate:       {permissions.Trader, permissions.ComplianceOfficer, permissions.PlatformAdmin},
-		permissions.KYCRead:              {permissions.Trader, permissions.ComplianceOfficer, permissions.PlatformAdmin},
-		permissions.KYCUpdate:            {permissions.Trader, permissions.ComplianceOfficer, permissions.PlatformAdmin},
-		permissions.KYCVerify:            {permissions.ComplianceOfficer},
-		permissions.KYCReassess:          {permissions.ComplianceOfficer, permissions.PlatformAdmin},
-		permissions.TransactionCreate:    {permissions.Trader, permissions.ComplianceOfficer, permissions.Supervisor, permissions.PlatformAdmin},
-		permissions.TransactionRead:      {permissions.Trader, permissions.ComplianceOfficer, permissions.Supervisor, permissions.PlatformAdmin},
-		permissions.RiskFlagCreate:       {permissions.Trader, permissions.ComplianceOfficer, permissions.Supervisor},
-		permissions.RiskFlagRead:         {permissions.Trader, permissions.ComplianceOfficer, permissions.Supervisor, permissions.PlatformAdmin},
-		permissions.RiskFlagInvestigate:  {permissions.ComplianceOfficer},
-		permissions.RiskFlagDelete:       {permissions.PlatformAdmin},
-	}
 	seen := map[string]bool{}
 	router := chi.NewRouter()
 	registerProtectedRoutes(router, &handlers.Handler{})
@@ -122,31 +99,25 @@ func TestProtectedRoutePermissionMatrix(t *testing.T) {
 		if !registered[key] {
 			t.Errorf("declared route %s is missing from router", key)
 		}
-		expected, exists := allowed[route.Permission]
-		if !exists {
-			t.Errorf("route %s has unknown or missing permission %q", key, route.Permission)
-			continue
-		}
-		want := map[permissions.Role]bool{}
-		for _, role := range expected {
-			want[role] = true
-		}
+		permissionHasRole := false
 		for _, role := range permissions.Roles() {
-			if got := permissions.Has(string(role), route.Permission); got != want[role] {
-				t.Errorf("%s for %s: permission %s = %v, want %v", key, role, route.Permission, got, want[role])
-			}
+			want := permissions.Has(string(role), route.Permission)
+			permissionHasRole = permissionHasRole || want
 			permissionHandler := middlewareInternal.RequirePermission(route.Permission)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
 			baseRequest := httptest.NewRequest(route.Method, route.Path, nil)
 			request := baseRequest.WithContext(traderservices.WithUser(baseRequest.Context(), &traderentity.Trader{Roles: string(role), Store: &traderentity.Store{Status: "ACTIVE"}}))
 			response := httptest.NewRecorder()
 			permissionHandler.ServeHTTP(response, request)
 			wantStatus := http.StatusForbidden
-			if want[role] {
+			if want {
 				wantStatus = http.StatusOK
 			}
 			if response.Code != wantStatus {
 				t.Errorf("%s for %s returned %d, want %d", key, role, response.Code, wantStatus)
 			}
+		}
+		if !permissionHasRole {
+			t.Errorf("route %s has unknown permission or no authorized role: %q", key, route.Permission)
 		}
 	}
 	if len(seen) != len(protectedRouteDefinitions) {

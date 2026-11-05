@@ -53,7 +53,7 @@ type AlertBrief struct {
 	Reason        string    `json:"reason"`
 	Level         string    `json:"level"`
 	Status        string    `json:"status"`
-	TransactionID int       `json:"transaction_id"`
+	TransactionID *int      `json:"transaction_id,omitempty"`
 	CustomerName  string    `json:"customer_name"`
 	CreatedAt     time.Time `json:"created_at"`
 }

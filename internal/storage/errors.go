@@ -1,6 +1,10 @@
 package storage
 
-import "errors"
+import (
+	"errors"
+
+	"github.com/lib/pq"
+)
 
 var (
 	ErrCustomerPhoneExists     = errors.New("customer with this phone already exists")
@@ -16,3 +20,21 @@ var (
 	ErrLastActiveAdmin         = errors.New("cannot remove the last active administrator")
 	ErrIdentityConflict        = errors.New("identity conflicts with an existing person")
 )
+
+// PostgresErrorCode returns the SQLSTATE code when err wraps a PostgreSQL error.
+func PostgresErrorCode(err error) string {
+	pgErr, ok := PostgresError(err)
+	if !ok {
+		return ""
+	}
+	return string(pgErr.Code)
+}
+
+// PostgresError returns the PostgreSQL error wrapped by err, if any.
+func PostgresError(err error) (*pq.Error, bool) {
+	var pgErr *pq.Error
+	if errors.As(err, &pgErr) {
+		return pgErr, true
+	}
+	return nil, false
+}

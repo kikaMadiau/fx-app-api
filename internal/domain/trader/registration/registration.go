@@ -83,14 +83,13 @@ func (r *Repository) Create(store *Store, acc Account) (int, error) {
 		return 0, ErrEmailTaken
 	}
 	var id int
-	// Dans cette API, « name » est le nom du bureau du compte.
 	err = tx.QueryRow(`
-		INSERT INTO traders (name, first_name, last_name, email, phone, status, role, roles, password_hash,
+		INSERT INTO traders (first_name, last_name, email, phone, status, role, roles, password_hash,
 		                     store_id, is_active, must_change_password, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, 'PENDING', 'TRADER', ARRAY['TRADER']::TEXT[], $6, $7, FALSE, FALSE,
+		VALUES ($1, $2, $3, $4, 'PENDING', 'TRADER', ARRAY['TRADER']::TEXT[], $5, $6, FALSE, FALSE,
 		        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
 		RETURNING id`,
-		store.Name, acc.FirstName, acc.LastName, acc.Email, acc.Phone, acc.PasswordHash, store.ID).Scan(&id)
+		acc.FirstName, acc.LastName, acc.Email, acc.Phone, acc.PasswordHash, store.ID).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("create trader: %w", err)
 	}

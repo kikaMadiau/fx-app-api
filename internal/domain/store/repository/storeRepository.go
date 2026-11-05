@@ -10,6 +10,7 @@ import (
 
 	storeentity "fx-app-api/internal/domain/store/entity"
 	traderentity "fx-app-api/internal/domain/trader/entity"
+	"fx-app-api/internal/domain/trader/permissions"
 	"fx-app-api/internal/storage"
 
 	"github.com/lib/pq"
@@ -211,7 +212,7 @@ func (r *StoreRepository) UpdateMember(storeID, actorID, traderID int, roles []s
 	if err != nil {
 		return err
 	}
-	if (!active || !hasRole(roles, "SUPERVISOR")) && hasRole(strings.Split(before.Roles, ","), "SUPERVISOR") && before.Active {
+	if (!active || !permissions.ContainsRole(roles, "SUPERVISOR")) && permissions.ContainsRole(strings.Split(before.Roles, ","), "SUPERVISOR") && before.Active {
 		var n int
 		if err = tx.QueryRow(`SELECT COUNT(*) FROM traders WHERE store_id=$1 AND is_active=TRUE AND deleted_at IS NULL AND 'SUPERVISOR'=ANY(roles)`, storeID).Scan(&n); err != nil {
 			return err
@@ -265,14 +266,6 @@ func firstRole(roles string) string {
 		return "TRADER"
 	}
 	return strings.TrimSpace(parts[0])
-}
-func hasRole(roles []string, role string) bool {
-	for _, v := range roles {
-		if strings.EqualFold(strings.TrimSpace(v), role) {
-			return true
-		}
-	}
-	return false
 }
 func audit(tx *sql.Tx, storeID, actorID int, action, entity string, id int, before, after any) error {
 	b, _ := json.Marshal(before)

@@ -169,9 +169,13 @@ func decodeJSON(r *http.Request, destination any) error {
 }
 
 func pathID(r *http.Request) (int, error) {
-	id, err := strconv.Atoi(r.PathValue("id"))
+	return pathInt(r, "id")
+}
+
+func pathInt(r *http.Request, key string) (int, error) {
+	id, err := strconv.Atoi(r.PathValue(key))
 	if err != nil || id <= 0 {
-		return 0, fmt.Errorf("id must be a positive integer")
+		return 0, fmt.Errorf("%s must be a positive integer", key)
 	}
 
 	return id, nil
@@ -204,12 +208,11 @@ func optionalPositiveInt(rawValue, fieldName string) (int, error) {
 
 func customerFromRequest(req UpsertCustomerRequest) *customerentity.Customer {
 	return &customerentity.Customer{
-		FullName:    req.FullName,
-		IDNumber:    req.IDNumber,
-		IDType:      req.IDType,
-		Phone:       req.Phone,
-		Address:     req.Address,
-		DateOfBirth: req.DateOfBirth,
+		FullName: req.FullName,
+		IDNumber: req.IDNumber,
+		IDType:   req.IDType,
+		Phone:    req.Phone,
+		Address:  req.Address,
 	}
 }
 

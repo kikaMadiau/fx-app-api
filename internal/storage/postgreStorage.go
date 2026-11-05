@@ -27,6 +27,9 @@ func (s *PostgresStore) DB() *sql.DB {
 }
 
 func NewPostgresStore() (*PostgresStore, error) {
+	if err := CheckDatabaseSecurity(); err != nil {
+		return nil, err
+	}
 	connStr := postgresConnStr()
 	db, err := sql.Open("postgres", connStr)
 	if err != nil {
@@ -72,7 +75,7 @@ func postgresConnStr() string {
 	// Déterminer le mode SSL par défaut selon l'environnement
 	defaultSSLMode := "prefer" // Bon compromis pour le développement
 	if isProductionEnvironment() {
-		defaultSSLMode = "require" // Exiger SSL en production
+		defaultSSLMode = "verify-full" // Chiffrer et vérifier le certificat et le nom du serveur
 	}
 
 	sslMode := getenv("DB_SSLMODE", defaultSSLMode)
@@ -233,19 +236,14 @@ func CheckDatabaseSecurity() error {
 	} else if sslMode == "" {
 		sslMode = "prefer"
 		if isProductionEnvironment() {
-			sslMode = "require"
+			sslMode = "verify-full"
 		}
 	}
 
 	if isProductionEnvironment() {
-		// En production, exiger un mode SSL sécurisé
-		if sslMode == "" || sslMode == "disable" || sslMode == "allow" {
-			return fmt.Errorf("INSECURE: database SSL mode %q in production environment. Use 'require' or 'verify-full'", sslMode)
-		}
-
-		// Recommander verify-full pour la production
+		// En production, exiger le chiffrement et la vérification du certificat serveur.
 		if sslMode != "verify-full" {
-			fmt.Println("RECOMMENDATION: Use DB_SSLMODE=verify-full in production for full certificate validation")
+			return fmt.Errorf("INSECURE: database SSL mode %q in production environment. Set DB_SSLMODE=verify-full or sslmode=verify-full in DATABASE_URL", sslMode)
 		}
 	}
 

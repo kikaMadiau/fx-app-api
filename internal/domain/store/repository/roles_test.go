@@ -1,12 +1,16 @@
 package repository
 
-import "testing"
+import (
+	"testing"
 
-func TestHasRole(t *testing.T) {
-	if !hasRole([]string{"TRADER", "SUPERVISOR"}, "SUPERVISOR") {
+	"fx-app-api/internal/domain/trader/permissions"
+)
+
+func TestContainsRole(t *testing.T) {
+	if !permissions.ContainsRole([]string{"TRADER", "SUPERVISOR"}, "SUPERVISOR") {
 		t.Fatal("combined role was not found")
 	}
-	if hasRole([]string{"TRADER"}, "SUPERVISOR") {
+	if permissions.ContainsRole([]string{"TRADER"}, "SUPERVISOR") {
 		t.Fatal("missing role was found")
 	}
 }

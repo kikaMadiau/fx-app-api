@@ -30,7 +30,7 @@ type CreateTransactionRequest struct {
 	Currency       string  `json:"currency"`
 	TargetCurrency string  `json:"target_currency"`
 	Type           string  `json:"type"`
-	Rate           float64 `json:"rate"`
+	Rate           float64 `json:"rate"` // Valeur historique acceptée, toujours ignorée au profit du taux serveur.
 	Status         string  `json:"status"`
 	TraderID       int     `json:"trader_id"`
 	CustomerID     int     `json:"customer_id"`
@@ -88,6 +88,12 @@ func (h *Handler) HandleCreateTransaction(w http.ResponseWriter, r *http.Request
 	if err := validateTransactionRequest(&req, trader.Id); err != nil {
 		return err
 	}
+	// Le taux transmis par l'interface est ignoré : seul le tarif serveur fait foi.
+	rate, err := transactionservice.ResolveTransactionRate(req.Currency, req.TargetCurrency, req.Type)
+	if err != nil {
+		return badRequest("unsupported transaction currency pair or rate", err)
+	}
+	req.Rate = rate
 
 	convertedAmount, err := transactionservice.CalculateConvertedAmount(req.Amount, req.Rate)
 	if err != nil {

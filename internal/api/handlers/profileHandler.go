@@ -448,6 +448,7 @@ func (h *Handler) HandleChangePassword(w http.ResponseWriter, r *http.Request) e
 		return badRequest(err.Error(), nil)
 	}
 	trader.PasswordHash = hash
+	trader.MustChangePassword = false
 	if err := h.traderStore.UpdateTrader(trader); err != nil {
 		return fmt.Errorf("update password: %w", err)
 	}

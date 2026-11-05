@@ -11,7 +11,6 @@ type CustomerFilter struct {
 	Query     string // recherche partielle sur le nom, le téléphone et le numéro de pièce
 	KYCStatus string // statut KYC exact (UNVERIFIED, VERIFIED, ...)
 	RiskLevel string // niveau de risque exact (LOW, MEDIUM, HIGH, CRITICAL)
-	StoreID   int    // bureau de change : 0 = tous les bureaux
 	Limit     int
 	Offset    int
 }

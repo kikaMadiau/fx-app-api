@@ -54,6 +54,16 @@ func AuthMiddleware(traderRepo storage.TraderStorage) func(http.Handler) http.Ha
 				http.Error(w, `{"message": "Session expirée, reconnectez-vous"}`, http.StatusUnauthorized)
 				return
 			}
+			// Les comptes provisionnés ne peuvent accéder qu'au changement de mot de passe.
+			if currentUser.MustChangePassword && (r.Method != http.MethodPost || r.URL.Path != "/auth/me/password") {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusForbidden)
+				_ = json.NewEncoder(w).Encode(map[string]string{
+					"code":    "password_change_required",
+					"message": "Vous devez changer votre mot de passe avant de continuer.",
+				})
+				return
+			}
 
 			ctx := traderservices.WithUser(r.Context(), currentUser)
 

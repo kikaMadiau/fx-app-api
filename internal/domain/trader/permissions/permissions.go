@@ -26,6 +26,7 @@ const (
 	KYCUpdate            = "kyc:update"
 	KYCVerify            = "kyc:validate"
 	KYCReassess          = "kyc:reassess"
+	KYCDocumentRead      = "kyc:document:read"
 	TransactionCreate    = "transaction:create"
 	TransactionRead      = "transaction:read"
 	RiskFlagCreate       = "riskflag:create"
@@ -42,11 +43,11 @@ const (
 )
 
 var rolePermissions = map[Role]map[string]struct{}{
-	Trader:            set(ProfileRead, ProfileUpdate, CustomerRead, CustomerCreate, CustomerUpdate, CustomerWrite, KYCRead, KYCUpdate, TransactionCreate, TransactionRead, RiskFlagCreate, RiskFlagRead, DashboardRead, AnalysisRead, StoreRead),
+	Trader:            set(ProfileRead, ProfileUpdate, CustomerRead, CustomerCreate, CustomerUpdate, CustomerWrite, KYCRead, TransactionCreate, TransactionRead, RiskFlagRead, DashboardRead, AnalysisRead, StoreRead),
 	ComplianceOfficer: set(ProfileRead, ProfileUpdate, CustomerRead, CustomerCreate, CustomerUpdate, CustomerWrite, KYCRead, KYCUpdate, KYCVerify, KYCReassess, TransactionCreate, TransactionRead, RiskFlagCreate, RiskFlagRead, RiskFlagInvestigate, RiskFlagResolve, DashboardRead, AnalysisRead, StoreRead),
-	Supervisor:        set(ProfileRead, ProfileUpdate, CustomerRead, CustomerCreate, TransactionCreate, TransactionRead, RiskFlagCreate, RiskFlagRead, DashboardRead, AnalysisRead, StoreRead, StoreManageMembers),
+	Supervisor:        set(ProfileRead, ProfileUpdate, CustomerRead, CustomerCreate, TransactionCreate, TransactionRead, RiskFlagRead, DashboardRead, AnalysisRead, StoreRead, StoreManageMembers),
 	// Local : l'administrateur garde l'accès aux écrans métier qu'il avait avant les stores.
-	PlatformAdmin: set(ProfileRead, ProfileUpdate, PlatformManageStores, TraderManage, CustomerRead, CustomerCreate, CustomerUpdate, CustomerWrite, KYCRead, KYCUpdate, KYCReassess, TransactionCreate, TransactionRead, RiskFlagRead, RiskFlagDelete, DashboardRead, AnalysisRead),
+	PlatformAdmin: set(ProfileRead, ProfileUpdate, PlatformManageStores, TraderManage, CustomerRead, CustomerCreate, CustomerUpdate, CustomerWrite, KYCRead, KYCDocumentRead, TransactionCreate, TransactionRead, RiskFlagRead, RiskFlagDelete, DashboardRead, AnalysisRead),
 }
 
 func set(values ...string) map[string]struct{} {
@@ -73,6 +74,18 @@ func Has(role, permission string) bool {
 	}
 	return false
 }
+
+// ContainsRole checks whether a role list contains target, ignoring case and whitespace.
+func ContainsRole(roles []string, target string) bool {
+	target = strings.TrimSpace(target)
+	for _, role := range roles {
+		if strings.EqualFold(strings.TrimSpace(role), target) {
+			return true
+		}
+	}
+	return false
+}
+
 func ForRole(role string) []string {
 	resultSet := map[string]struct{}{}
 	for _, item := range strings.Split(role, ",") {

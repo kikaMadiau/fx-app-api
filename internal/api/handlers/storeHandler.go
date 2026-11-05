@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -17,7 +16,7 @@ import (
 	"fx-app-api/internal/domain/trader/entity"
 	"fx-app-api/internal/domain/trader/permissions"
 	traderservices "fx-app-api/internal/domain/trader/traderservices"
-	"github.com/lib/pq"
+	"fx-app-api/internal/storage"
 )
 
 type createStoreRequest struct {
@@ -244,7 +243,7 @@ func (h *Handler) HandleUpdateStoreMember(w http.ResponseWriter, r *http.Request
 	if err := requireOwnStore(r, id); err != nil {
 		return err
 	}
-	traderID, err := positivePathInt(r, "traderId")
+	traderID, err := pathInt(r, "traderId")
 	if err != nil {
 		return badRequest("invalid trader id", err)
 	}
@@ -259,14 +258,14 @@ func (h *Handler) HandleUpdateStoreMember(w http.ResponseWriter, r *http.Request
 		return badRequest("invalid roles", err)
 	}
 	actor := traderservices.GetUser(r)
-	if actor.Id == traderID && containsRole(req.Roles, "SUPERVISOR") == false {
+	if actor.Id == traderID && !permissions.ContainsRole(req.Roles, "SUPERVISOR") {
 		members, e := h.storeRepo.Members(id)
 		if e != nil {
 			return e
 		}
 		supervisors := 0
 		for _, m := range members {
-			if m.IsActive && containsRole(strings.Split(m.Roles, ","), "SUPERVISOR") {
+			if m.IsActive && permissions.ContainsRole(strings.Split(m.Roles, ","), "SUPERVISOR") {
 				supervisors++
 			}
 		}
@@ -294,6 +293,7 @@ func temporaryPassword() (string, error) {
 	}
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
+
 // HandleRejectStoreMember : le superviseur refuse une inscription en attente.
 func (h *Handler) HandleRejectStoreMember(w http.ResponseWriter, r *http.Request) error {
 	id, err := pathID(r)
@@ -303,7 +303,7 @@ func (h *Handler) HandleRejectStoreMember(w http.ResponseWriter, r *http.Request
 	if err := requireOwnStore(r, id); err != nil {
 		return err
 	}
-	traderID, err := positivePathInt(r, "traderId")
+	traderID, err := pathInt(r, "traderId")
 	if err != nil {
 		return badRequest("invalid trader id", err)
 	}
@@ -329,14 +329,7 @@ func validateStoreRoles(roles []string) error {
 	}
 	return nil
 }
-func containsRole(roles []string, role string) bool {
-	for _, v := range roles {
-		if strings.EqualFold(strings.TrimSpace(v), role) {
-			return true
-		}
-	}
-	return false
-}
+
 // requireOwnStore : un superviseur ne gère que les membres de son propre bureau. Un autre
 // bureau répond 404, comme s'il n'existait pas.
 func requireOwnStore(r *http.Request, storeID int) error {
@@ -358,18 +351,9 @@ func storeRepositoryError(err error) error {
 	case errors.Is(err, storerepository.ErrMemberAlreadyInStore):
 		return conflict("trader already belongs to this store")
 	default:
-		var pgErr *pq.Error
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		if storage.PostgresErrorCode(err) == "23505" {
 			return conflict("store license number or email already exists")
 		}
 		return fmt.Errorf("store operation failed: %w", err)
 	}
-}
-func positivePathInt(r *http.Request, key string) (int, error) {
-	raw := r.PathValue(key)
-	value, err := strconv.Atoi(raw)
-	if err != nil || value <= 0 {
-		return 0, fmt.Errorf("invalid positive integer")
-	}
-	return value, nil
 }

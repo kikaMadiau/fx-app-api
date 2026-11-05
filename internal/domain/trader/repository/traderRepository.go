@@ -26,7 +26,6 @@ func (r *TraderRepository) Init() error {
 	createTableSQL := `
 		CREATE TABLE IF NOT EXISTS traders (
 			id SERIAL PRIMARY KEY,
-			name VARCHAR(255),
 			first_name VARCHAR(255),
 			last_name VARCHAR(255),
 			email VARCHAR(255) UNIQUE NOT NULL,
@@ -85,9 +84,9 @@ func (r *TraderRepository) CreateTraderWithTx(tx *sql.Tx, trader *entity.Trader)
 	trader.Roles = string(role)
 	query := `
 		INSERT INTO traders (
-			name, first_name, last_name, email, phone, status, role, roles, password_hash, store_id, is_active, created_at, updated_at
+			first_name, last_name, email, phone, status, role, roles, password_hash, store_id, is_active, created_at, updated_at
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7::TEXT, ARRAY[$7::TEXT], $8, $9, $10, $11, $12
+			$1, $2, $3, $4, $5, $6, ARRAY[$6::TEXT], $7, $8, $9, $10, $11
 		) RETURNING id, created_at, updated_at`
 
 	trader.CreatedAt = time.Now()
@@ -96,11 +95,10 @@ func (r *TraderRepository) CreateTraderWithTx(tx *sql.Tx, trader *entity.Trader)
 	var row interface{ Scan(...any) error }
 	if tx != nil {
 		row = tx.QueryRow(query,
-			trader.Name, trader.FirstName, trader.LastName, trader.Email, trader.Phone, trader.Status,
+			trader.FirstName, trader.LastName, trader.Email, trader.Phone, trader.Status,
 			trader.Roles, trader.PasswordHash, trader.StoreId, trader.IsActive, trader.CreatedAt, trader.UpdatedAt)
 	} else {
 		row = r.store.DB().QueryRow(query,
-			trader.Name,
 			trader.FirstName,
 			trader.LastName,
 			trader.Email,
@@ -126,7 +124,7 @@ func (r *TraderRepository) CreateTraderWithTx(tx *sql.Tx, trader *entity.Trader)
 // GetTrader récupère un cambiste par son ID.
 func (r *TraderRepository) GetTrader(id int) (*entity.Trader, error) {
 	query := `
-		SELECT t.id, COALESCE(t.name, ''), COALESCE(t.first_name, ''), COALESCE(t.last_name, ''),
+		SELECT t.id, COALESCE(t.first_name, ''), COALESCE(t.last_name, ''),
 		       t.email, COALESCE(t.phone, ''), COALESCE(t.status, ''), COALESCE(array_to_string(t.roles, ','), ''),
 		       t.password_hash, COALESCE(t.store_id, 0), t.is_active, t.created_at, t.updated_at, t.deleted_at,
 		       t.is_platform_admin, t.must_change_password, COALESCE(s.id, 0), COALESCE(s.name,''), COALESCE(s.bcc_license_number,''), COALESCE(s.status,''), s.license_expires_at
@@ -138,7 +136,6 @@ func (r *TraderRepository) GetTrader(id int) (*entity.Trader, error) {
 
 	err := r.store.DB().QueryRow(query, id).Scan(
 		&trader.Id,
-		&trader.Name,
 		&trader.FirstName,
 		&trader.LastName,
 		&trader.Email,
@@ -168,6 +165,8 @@ func (r *TraderRepository) GetTrader(id int) (*entity.Trader, error) {
 	}
 	if trader.Store.ID == 0 {
 		trader.Store = nil
+	} else {
+		trader.Name = trader.Store.Name
 	}
 
 	return trader, nil
@@ -201,19 +200,18 @@ func (r *TraderRepository) FindOrCreateTrader(trader *entity.Trader) (*entity.Tr
 // GetTraderByEmail récupère un cambiste par son email.
 func (r *TraderRepository) GetTraderByEmail(email string) (*entity.Trader, error) {
 	query := `
-		SELECT t.id, COALESCE(t.name, ''), COALESCE(t.first_name, ''), COALESCE(t.last_name, ''),
+		SELECT t.id, COALESCE(t.first_name, ''), COALESCE(t.last_name, ''),
 		       t.email, COALESCE(t.phone, ''), COALESCE(t.status, ''), COALESCE(array_to_string(t.roles, ','), ''),
 		       t.password_hash, COALESCE(t.store_id, 0), t.is_active, t.created_at, t.updated_at, t.deleted_at,
 		       t.is_platform_admin, t.must_change_password, COALESCE(s.id, 0), COALESCE(s.name,''), COALESCE(s.bcc_license_number,''), COALESCE(s.status,''), s.license_expires_at
 		FROM traders t LEFT JOIN stores s ON s.id=t.store_id AND s.deleted_at IS NULL
-		WHERE t.email = $1 AND t.deleted_at IS NULL`
+		WHERE LOWER(BTRIM(t.email)) = LOWER(BTRIM($1)) AND t.deleted_at IS NULL`
 
 	trader := &entity.Trader{}
 	trader.Store = &entity.Store{}
 
 	err := r.store.DB().QueryRow(query, email).Scan(
 		&trader.Id,
-		&trader.Name,
 		&trader.FirstName,
 		&trader.LastName,
 		&trader.Email,
@@ -243,6 +241,8 @@ func (r *TraderRepository) GetTraderByEmail(email string) (*entity.Trader, error
 	}
 	if trader.Store.ID == 0 {
 		trader.Store = nil
+	} else {
+		trader.Name = trader.Store.Name
 	}
 
 	return trader, nil
@@ -269,8 +269,9 @@ func (r *TraderRepository) UpdateTraderWithTx(tx *sql.Tx, trader *entity.Trader)
 	trader.Roles = string(role)
 	query := `
 		UPDATE traders 
-		SET name = $1, first_name = $2, last_name = $3, email = $4, phone = $5,
-		    status = $6, role = $7, store_id = $8, is_active = $9, password_hash = $10, updated_at = $11
+		SET first_name = $1, last_name = $2, email = $3, phone = $4,
+		    status = $5, role = $6, store_id = $7, is_active = $8, password_hash = $9,
+		    must_change_password = $10, updated_at = $11
 		WHERE id = $12`
 
 	trader.UpdatedAt = time.Now()
@@ -296,7 +297,6 @@ func (r *TraderRepository) UpdateTraderWithTx(tx *sql.Tx, trader *entity.Trader)
 		}
 	}
 	_, err := tx.Exec(query,
-		trader.Name,
 		trader.FirstName,
 		trader.LastName,
 		trader.Email,
@@ -306,6 +306,7 @@ func (r *TraderRepository) UpdateTraderWithTx(tx *sql.Tx, trader *entity.Trader)
 		trader.StoreId,
 		trader.IsActive,
 		trader.PasswordHash,
+		trader.MustChangePassword,
 		trader.UpdatedAt,
 		trader.Id,
 	)

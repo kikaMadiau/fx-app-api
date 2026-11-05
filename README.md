@@ -10,7 +10,7 @@ API Go pour la gestion de transactions de change, avec profils KYC clients, anal
 - Creation de client avec profil KYC initial.
 - Consultation et mise a jour du profil KYC.
 - Recalcul manuel du risque KYC client.
-- Creation de transaction FX avec conversion calculee depuis le taux fixe par le trader.
+- Creation de transaction FX avec conversion calculee depuis le taux configure cote serveur.
 - Creation de transaction pour nouveau client ou client existant recherche par telephone.
 - Analyse AML/KYC synchrone apres creation de transaction.
 - Creation automatique de `risk_flags` quand une regle AML/KYC est declenchee.
@@ -420,7 +420,7 @@ En-tête: `Authorization: Bearer <token>`, permission `analysis:read`. Aucun bod
 [{"pair":"USD/CDF","buy_rate":2770,"sell_rate":2795,"change_rate":0.6}]
 ```
 
-Les taux affichés sont configurables dans le fichier `.env` du backend avec les variables `EXCHANGE_RATE_<DEVISE>_CDF_BUY`, `EXCHANGE_RATE_<DEVISE>_CDF_SELL` et `EXCHANGE_RATE_<DEVISE>_CDF_CHANGE` (ex. `EXCHANGE_RATE_USD_CDF_BUY=2770`). Les valeurs par défaut sont celles de l'exemple `.env.example`. Redémarrer l'API après une modification. Ces taux alimentent l'affichage des analyses ; le taux enregistré pour une transaction reste celui fourni lors de sa création.
+Les taux sont configurables dans le fichier `.env` du backend avec les variables `EXCHANGE_RATE_<DEVISE>_CDF_BUY`, `EXCHANGE_RATE_<DEVISE>_CDF_SELL` et `EXCHANGE_RATE_<DEVISE>_CDF_CHANGE` (ex. `EXCHANGE_RATE_USD_CDF_BUY=2770`). Les valeurs par défaut sont celles documentées dans `.env.example`. Ces mêmes taux alimentent l'affichage des analyses et la création des transactions ; le backend ignore tout taux fourni par le client. Seules les paires USD/CDF, EUR/CDF et GBP/CDF sont acceptées.
 
 ### `GET /traders/{id}`
 
@@ -705,9 +705,7 @@ Body nouveau client:
     "amount": 12500.75,
     "currency": "USD",
     "target_currency": "CDF",
-    "type": "deposit",
-    "rate": 2845.5,
-    "status": "PENDING",
+    "type": "BUY",
     "trader_id": 1
   }
 }
@@ -722,9 +720,7 @@ Body client existant:
     "amount": 12500.75,
     "currency": "USD",
     "target_currency": "CDF",
-    "type": "deposit",
-    "rate": 2845.5,
-    "status": "PENDING",
+    "type": "BUY",
     "trader_id": 1
   }
 }
@@ -737,9 +733,7 @@ Body historique toujours accepte:
   "amount": 12500.75,
   "currency": "USD",
   "target_currency": "CDF",
-  "type": "deposit",
-  "rate": 2845.5,
-  "status": "PENDING",
+  "type": "BUY",
   "trader_id": 1,
   "customer_id": 1
 }
@@ -1216,9 +1210,7 @@ Nouveau client:
     "amount": 12500.75,
     "currency": "USD",
     "target_currency": "CDF",
-    "type": "deposit",
-    "rate": 2845.5,
-    "status": "PENDING",
+    "type": "BUY",
     "trader_id": 1
   }
 }
@@ -1233,9 +1225,7 @@ Client existant:
     "amount": 12500.75,
     "currency": "USD",
     "target_currency": "CDF",
-    "type": "deposit",
-    "rate": 2845.5,
-    "status": "PENDING",
+    "type": "BUY",
     "trader_id": 1
   }
 }
@@ -1248,9 +1238,7 @@ Format historique avec `customer_id`:
   "amount": 12500.75,
   "currency": "USD",
   "target_currency": "CDF",
-  "type": "deposit",
-  "rate": 2845.5,
-  "status": "PENDING",
+  "type": "BUY",
   "trader_id": 1,
   "customer_id": 2
 }
@@ -1261,8 +1249,8 @@ Format historique avec `customer_id`:
 | `amount` | number | oui | Montant source. Doit etre `> 0`. |
 | `currency` | string | oui | Devise source, convertie en majuscules. |
 | `target_currency` | string | oui | Devise cible, convertie en majuscules. |
-| `type` | string | non | Type metier, par exemple `deposit`, `withdrawal`, `buy`, `sell`. |
-| `rate` | number | oui | Taux fixe par le trader. Doit etre `> 0`. |
+| `type` | string | non | Sens du change : `BUY` (achat) ou `SELL` (vente). |
+| `rate` | number | non | Champ historique facultatif ; toute valeur envoyee par le client est ignoree. Le backend selectionne le taux configure correspondant a la paire et au sens du change. |
 | `status` | string | non | Statut initial. |
 | `trader_id` | number | oui | Identifiant du trader. |
 | `customer_id` | number | oui si pas de `client` ni `client_phone` | Identifiant du client. |
@@ -1279,7 +1267,7 @@ Pour un client existant, le backend recherche le client via `client_phone`, recu
 Le calcul est fait avant la persistence:
 
 ```text
-converted_amount = amount * rate
+converted_amount = amount * server_configured_rate
 ```
 
 Le resultat est arrondi a 4 decimales.
@@ -1525,7 +1513,7 @@ Ce recalcul manuel est plus simple que l'analyse AML post-transaction: il ne lan
 | `currency` | `VARCHAR(10)` | Devise source. |
 | `target_currency` | `VARCHAR(10)` | Devise cible. |
 | `type` | `VARCHAR(50)` | Type de transaction. |
-| `rate` | `NUMERIC(19, 6)` | Taux fixe par le trader. |
+| `rate` | `NUMERIC(19, 6)` | Taux serveur appliqué à la paire et au sens du change. |
 | `converted_amount` | `NUMERIC(19, 4)` | Resultat `amount * rate`. |
 | `risk_level` | `VARCHAR(50)` | Mis a jour par l'analyse AML. |
 | `risk_score` | `NUMERIC(5, 2)` | Mis a jour par l'analyse AML. |

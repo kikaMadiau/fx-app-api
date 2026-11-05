@@ -33,22 +33,23 @@ type TraderLoginResponse struct {
 }
 
 type TraderResponse struct {
-	ID              int                 `json:"id"`
-	FirstName       string              `json:"first_name"`
-	LastName        string              `json:"last_name"`
-	Email           string              `json:"email"`
-	Phone           string              `json:"phone"`
-	Status          string              `json:"status"`
-	CreatedAt       time.Time           `json:"created_at"`
-	UpdatedAt       time.Time           `json:"updated_at"`
-	DeletedAt       *time.Time          `json:"deleted_at"`
-	Role            string              `json:"role"`
-	StoreID         int                 `json:"store_id"`
-	IsActive        bool                `json:"is_active"`
-	Permissions     []string            `json:"permissions"`
-	Roles           []string            `json:"roles"`
-	Store           *traderentity.Store `json:"store,omitempty"`
-	IsPlatformAdmin bool                `json:"is_platform_admin"`
+	ID                 int                 `json:"id"`
+	FirstName          string              `json:"first_name"`
+	LastName           string              `json:"last_name"`
+	Email              string              `json:"email"`
+	Phone              string              `json:"phone"`
+	Status             string              `json:"status"`
+	CreatedAt          time.Time           `json:"created_at"`
+	UpdatedAt          time.Time           `json:"updated_at"`
+	DeletedAt          *time.Time          `json:"deleted_at"`
+	Role               string              `json:"role"`
+	StoreID            int                 `json:"store_id"`
+	IsActive           bool                `json:"is_active"`
+	Permissions        []string            `json:"permissions"`
+	Roles              []string            `json:"roles"`
+	Store              *traderentity.Store `json:"store,omitempty"`
+	IsPlatformAdmin    bool                `json:"is_platform_admin"`
+	MustChangePassword bool                `json:"must_change_password"`
 }
 
 type UpsertTraderRequest struct {
@@ -81,22 +82,23 @@ func traderResponse(trader *traderentity.Trader) TraderResponse {
 		role = string(permissions.Admin)
 	}
 	return TraderResponse{
-		ID:              trader.Id,
-		FirstName:       trader.FirstName,
-		LastName:        trader.LastName,
-		Email:           trader.Email,
-		Phone:           trader.Phone,
-		Status:          trader.Status,
-		CreatedAt:       trader.CreatedAt,
-		UpdatedAt:       trader.UpdatedAt,
-		DeletedAt:       trader.DeletedAt,
-		Role:            role,
-		StoreID:         trader.StoreId,
-		IsActive:        trader.IsActive,
-		Permissions:     perms,
-		Roles:           traderauthservice.RoleList(trader),
-		Store:           trader.Store,
-		IsPlatformAdmin: trader.IsPlatformAdmin,
+		ID:                 trader.Id,
+		FirstName:          trader.FirstName,
+		LastName:           trader.LastName,
+		Email:              trader.Email,
+		Phone:              trader.Phone,
+		Status:             trader.Status,
+		CreatedAt:          trader.CreatedAt,
+		UpdatedAt:          trader.UpdatedAt,
+		DeletedAt:          trader.DeletedAt,
+		Role:               role,
+		StoreID:            trader.StoreId,
+		IsActive:           trader.IsActive,
+		Permissions:        perms,
+		Roles:              traderauthservice.RoleList(trader),
+		Store:              trader.Store,
+		IsPlatformAdmin:    trader.IsPlatformAdmin,
+		MustChangePassword: trader.MustChangePassword,
 	}
 }
 

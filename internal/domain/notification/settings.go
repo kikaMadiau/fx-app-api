@@ -1,9 +1,15 @@
 package notification
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
 	"database/sql"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -57,6 +63,69 @@ var settingKeys = []string{
 
 type SettingsRepository struct{ store *storage.PostgresStore }
 
+const encryptedSecretPrefix = "enc:v1:"
+
+func notificationEncryptionKey() ([]byte, error) {
+	encoded := strings.TrimSpace(os.Getenv("NOTIFICATION_SETTINGS_ENCRYPTION_KEY"))
+	if encoded == "" {
+		return nil, errors.New("NOTIFICATION_SETTINGS_ENCRYPTION_KEY must be configured to store notification secrets")
+	}
+	key, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil || len(key) != 32 {
+		return nil, errors.New("NOTIFICATION_SETTINGS_ENCRYPTION_KEY must be a base64-encoded 32-byte key")
+	}
+	return key, nil
+}
+
+func encryptNotificationSecret(value string) (string, error) {
+	key, err := notificationEncryptionKey()
+	if err != nil {
+		return "", err
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", err
+	}
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+	nonce := make([]byte, aead.NonceSize())
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return "", err
+	}
+	sealed := aead.Seal(nonce, nonce, []byte(value), nil)
+	return encryptedSecretPrefix + base64.RawStdEncoding.EncodeToString(sealed), nil
+}
+
+func decryptNotificationSecret(value string) (string, error) {
+	if !strings.HasPrefix(value, encryptedSecretPrefix) {
+		return value, nil
+	}
+	key, err := notificationEncryptionKey()
+	if err != nil {
+		return "", err
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", err
+	}
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+	sealed, err := base64.RawStdEncoding.DecodeString(strings.TrimPrefix(value, encryptedSecretPrefix))
+	if err != nil || len(sealed) < aead.NonceSize() {
+		return "", errors.New("stored notification secret has invalid ciphertext")
+	}
+	nonce, ciphertext := sealed[:aead.NonceSize()], sealed[aead.NonceSize():]
+	plain, err := aead.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		return "", fmt.Errorf("decrypt notification secret: %w", err)
+	}
+	return string(plain), nil
+}
+
 func NewSettingsRepository(store *storage.PostgresStore) *SettingsRepository {
 	return &SettingsRepository{store: store}
 }
@@ -71,7 +140,54 @@ func (r *SettingsRepository) Init() error {
 	if err != nil {
 		return fmt.Errorf("init notification settings: %w", err)
 	}
-	return nil
+	return r.encryptLegacySecrets()
+}
+
+// encryptLegacySecrets upgrades existing plaintext credentials once, before they are loaded.
+func (r *SettingsRepository) encryptLegacySecrets() error {
+	tx, err := r.store.DB().Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	rows, err := tx.Query(`SELECT key, value FROM notification_settings WHERE key IN ('twilio_auth_token', 'smtp_pass') FOR UPDATE`)
+	if err != nil {
+		return fmt.Errorf("read legacy notification secrets: %w", err)
+	}
+	type entry struct{ key, value string }
+	var entries []entry
+	for rows.Next() {
+		var e entry
+		if err := rows.Scan(&e.key, &e.value); err != nil {
+			rows.Close()
+			return err
+		}
+		entries = append(entries, e)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	for _, e := range entries {
+		if e.value == "" {
+			continue
+		}
+		if strings.HasPrefix(e.value, encryptedSecretPrefix) {
+			if _, err := decryptNotificationSecret(e.value); err != nil {
+				return fmt.Errorf("validate encrypted notification secret %s: %w", e.key, err)
+			}
+			continue
+		}
+		ciphertext, err := encryptNotificationSecret(e.value)
+		if err != nil {
+			return fmt.Errorf("migrate legacy notification secret %s: %w", e.key, err)
+		}
+		if _, err := tx.Exec(`UPDATE notification_settings SET value = $2, updated_at = NOW() WHERE key = $1`, e.key, ciphertext); err != nil {
+			return fmt.Errorf("encrypt legacy notification secret %s: %w", e.key, err)
+		}
+	}
+	return tx.Commit()
 }
 
 // Load lit les réglages ; Mode reste vide tant que l'administrateur n'a rien enregistré.
@@ -91,6 +207,13 @@ func (r *SettingsRepository) Load() (Settings, error) {
 	}
 	if err := rows.Err(); err != nil {
 		return Settings{}, err
+	}
+	for _, key := range []string{"twilio_auth_token", "smtp_pass"} {
+		decrypted, err := decryptNotificationSecret(values[key])
+		if err != nil {
+			return Settings{}, fmt.Errorf("load notification secret %s: %w", key, err)
+		}
+		values[key] = decrypted
 	}
 	port, _ := strconv.Atoi(values["smtp_port"])
 	return Settings{
@@ -129,10 +252,18 @@ func (r *SettingsRepository) Save(s Settings, newToken, newSMTPPass *string) err
 		"smtp_ssl":             boolString(s.SMTPSSL),
 	}
 	if newToken != nil {
-		values["twilio_auth_token"] = *newToken
+		ciphertext, err := encryptNotificationSecret(*newToken)
+		if err != nil {
+			return fmt.Errorf("encrypt Twilio auth token: %w", err)
+		}
+		values["twilio_auth_token"] = ciphertext
 	}
 	if newSMTPPass != nil {
-		values["smtp_pass"] = *newSMTPPass
+		ciphertext, err := encryptNotificationSecret(*newSMTPPass)
+		if err != nil {
+			return fmt.Errorf("encrypt SMTP password: %w", err)
+		}
+		values["smtp_pass"] = ciphertext
 	}
 	tx, err := r.store.DB().Begin()
 	if err != nil {

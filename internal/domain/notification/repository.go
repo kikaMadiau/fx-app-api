@@ -131,7 +131,7 @@ func (r *Repository) LoadTransaction(transactionID int) (*TransactionContext, er
 		       COALESCE(TO_CHAR(k.id_expiry_date, 'YYYY-MM-DD'), ''),
 		       EXISTS (SELECT 1 FROM customer_id_documents d WHERE d.customer_id = c.id AND d.side = 'front'),
 		       EXISTS (SELECT 1 FROM customer_id_documents d WHERE d.customer_id = c.id AND d.side = 'back'),
-		       COALESCE(tr.first_name, ''), COALESCE(tr.last_name, ''), COALESCE(tr.name, ''),
+		       COALESCE(tr.first_name, ''), COALESCE(tr.last_name, ''), COALESCE(s.name, ''),
 		       COALESCE(s.name, ''), COALESCE(s.bcc_license_number, '')
 		FROM transactions t
 		JOIN customers c ON c.id = t.customer_id
@@ -155,7 +155,7 @@ func (r *Repository) LoadCustomer(customerID, traderID int) (*TransactionContext
 	c := &TransactionContext{CreatedAt: time.Now()}
 	err := r.store.DB().QueryRow(`
 		SELECT c.id, c.full_name, COALESCE(c.phone, ''), COALESCE(c.email, ''),
-		       COALESCE(tr.first_name, ''), COALESCE(tr.last_name, ''), COALESCE(tr.name, ''),
+		       COALESCE(tr.first_name, ''), COALESCE(tr.last_name, ''), COALESCE(s.name, ''),
 		       COALESCE(s.name, ''), COALESCE(s.bcc_license_number, '')
 		FROM customers c
 		JOIN traders tr ON tr.id = $2
