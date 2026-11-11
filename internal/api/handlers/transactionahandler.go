@@ -1,9 +1,13 @@
 package handlers
 
 import (
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	amlengine "fx-app-api/internal/domain/aml/engine"
+	amlservice "fx-app-api/internal/domain/aml/service"
 	customerentity "fx-app-api/internal/domain/customer/entity"
 	"fx-app-api/internal/domain/customer/kycrisk"
 	"fx-app-api/internal/domain/notification"
@@ -26,6 +30,7 @@ const (
 )
 
 type CreateTransactionRequest struct {
+	IdempotencyKey string  `json:"idempotency_key,omitempty"`
 	Amount         float64 `json:"amount"`
 	Currency       string  `json:"currency"`
 	TargetCurrency string  `json:"target_currency"`
@@ -37,9 +42,10 @@ type CreateTransactionRequest struct {
 }
 
 type CreateTransactionPayload struct {
-	Client      *CreateTransactionCustomerRequest `json:"client"`
-	ClientPhone string                            `json:"client_phone"`
-	Transaction *CreateTransactionRequest         `json:"transaction"`
+	IdempotencyKey string                            `json:"idempotency_key,omitempty"`
+	Client         *CreateTransactionCustomerRequest `json:"client"`
+	ClientPhone    string                            `json:"client_phone"`
+	Transaction    *CreateTransactionRequest         `json:"transaction"`
 
 	Amount         float64 `json:"amount"`
 	Currency       string  `json:"currency"`
@@ -112,6 +118,20 @@ func (h *Handler) HandleCreateTransaction(w http.ResponseWriter, r *http.Request
 		CustomerID:      req.CustomerID,
 		StoreID:         max(traderservices.StoreScope(trader), 0),
 	}
+	idempotencyKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if idempotencyKey == "" {
+		idempotencyKey = strings.TrimSpace(req.IdempotencyKey)
+	}
+	if idempotencyKey == "" {
+		var randomKey [32]byte
+		if _, err := rand.Read(randomKey[:]); err != nil {
+			return fmt.Errorf("generate AML idempotency key: %w", err)
+		}
+		idempotencyKey = hex.EncodeToString(randomKey[:])
+	}
+	if len(idempotencyKey) > 200 || strings.ContainsAny(idempotencyKey, "\r\n\x00") {
+		return badRequest("invalid idempotency key", nil)
+	}
 
 	var dbTx *sql.Tx
 	var errCreate error
@@ -134,7 +154,16 @@ func (h *Handler) HandleCreateTransaction(w http.ResponseWriter, r *http.Request
 		if err != nil {
 			return badRequest("client "+err.Error(), nil)
 		}
-		dbTx, errCreate = h.transactionStore.CreateTransactionWithNewCustomer(tx, customer)
+		preparer, ok := h.transactionStore.(interface {
+			BeginWithNewCustomerForAML(*customerentity.Customer, string) (*sql.Tx, error)
+		})
+		if !ok {
+			return fmt.Errorf("transaction storage does not support pre-insert AML preparation")
+		}
+		dbTx, errCreate = preparer.BeginWithNewCustomerForAML(customer, idempotencyKey)
+		if errCreate == nil {
+			tx.CustomerID = customer.ID
+		}
 		if errCreate == nil && idExpiry != "" && h.customerService != nil {
 			if errCreate = h.customerService.SetIDExpiryDateWithTx(dbTx, tx.CustomerID, idExpiry); errCreate != nil {
 				_ = dbTx.Rollback()
@@ -154,7 +183,28 @@ func (h *Handler) HandleCreateTransaction(w http.ResponseWriter, r *http.Request
 		if _, err := storage.NormalizePhone(payload.ClientPhone); err != nil {
 			return badRequest("invalid client_phone", err)
 		}
-		dbTx, _, errCreate = h.transactionStore.CreateTransactionForExistingCustomerPhone(tx, payload.ClientPhone)
+		dbTx, errCreate = h.startTransaction()
+		if errCreate == nil {
+			if errCreate = lockAMLSubmission(h.transactionStore, dbTx, idempotencyKey); errCreate != nil {
+				_ = dbTx.Rollback()
+				dbTx = nil
+			}
+		}
+		if errCreate == nil {
+			preparer, ok := h.transactionStore.(interface {
+				FindCustomerByPhoneWithTx(*sql.Tx, string, int) (*customerentity.Customer, error)
+			})
+			if !ok {
+				_ = dbTx.Rollback()
+				dbTx = nil
+				return fmt.Errorf("transaction storage does not support pre-insert AML preparation")
+			}
+			var customer *customerentity.Customer
+			customer, errCreate = preparer.FindCustomerByPhoneWithTx(dbTx, payload.ClientPhone, tx.StoreID)
+			if errCreate == nil {
+				tx.CustomerID = customer.ID
+			}
+		}
 	default:
 		if req.CustomerID <= 0 {
 			return badRequest("customer_id, client_phone, or client is required", nil)
@@ -162,11 +212,10 @@ func (h *Handler) HandleCreateTransaction(w http.ResponseWriter, r *http.Request
 		if err := h.requireInStore(r, "customers", req.CustomerID, "customer not found"); err != nil {
 			return err
 		}
-		// La transaction de change est insérée DANS la transaction SQL : si l'analyse AML échoue,
-		// le rollback l'annule aussi.
 		dbTx, errCreate = h.startTransaction()
 		if errCreate == nil {
-			if errCreate = h.transactionStore.CreateTransactionWithTx(dbTx, tx); errCreate != nil {
+			errCreate = lockAMLSubmission(h.transactionStore, dbTx, idempotencyKey)
+			if errCreate != nil {
 				_ = dbTx.Rollback()
 				dbTx = nil
 			}
@@ -179,6 +228,52 @@ func (h *Handler) HandleCreateTransaction(w http.ResponseWriter, r *http.Request
 	// Sans effet après un Commit réussi ; annule tout dans les autres cas (erreur, panic).
 	if dbTx != nil {
 		defer func() { _ = dbTx.Rollback() }()
+	}
+	prepared, err := h.amlDecision.DecideAMLWithTx(r.Context(), dbTx, tx, idempotencyKey)
+	if errors.Is(err, amlservice.ErrAMLIdempotencyReplay) {
+		_ = dbTx.Rollback()
+		if prepared != nil && prepared.ReplayOutcome == amlengine.DecisionBlock {
+			w.Header().Set("Idempotency-Key", idempotencyKey)
+			return &HTTPError{StatusCode: http.StatusUnprocessableEntity, Message: "operation blocked by AML rules"}
+		}
+		if prepared != nil && prepared.ReplayOperationID > 0 {
+			existing, getErr := h.transactionStore.GetTransaction(int(prepared.ReplayOperationID))
+			currentUser := traderservices.GetUser(r)
+			if getErr == nil && existing.StoreID == tx.StoreID && canReadTransaction(existing, currentUser) {
+				w.Header().Set("Idempotency-Key", idempotencyKey)
+				return WriteJson(w, http.StatusOK, existing)
+			}
+		}
+		return conflict("idempotency key was already used")
+	}
+	if err != nil {
+		if errors.Is(err, amlservice.ErrInvalidAMLAmount) {
+			return badRequest("transaction amount must be representable in minor units", err)
+		}
+		if errors.Is(err, amlengine.ErrMissingRequiredInput) {
+			return &HTTPError{StatusCode: http.StatusServiceUnavailable, Message: "AML rule input is unavailable", Err: err}
+		}
+		return fmt.Errorf("evaluate AML decision: %w", err)
+	}
+	if prepared.Decision.Outcome == amlengine.DecisionAcceptWithApproval {
+		tx.Status = transactionentity.StatusPending
+		prepared.Input.Operation.Status = tx.Status
+	}
+	if prepared.Decision.Outcome == amlengine.DecisionBlock {
+		if err := h.amlDecision.PersistAMLDecisionWithTx(r.Context(), dbTx, tx, prepared); err != nil {
+			return fmt.Errorf("persist blocked AML decision: %w", err)
+		}
+		if err := dbTx.Commit(); err != nil {
+			return fmt.Errorf("commit blocked AML decision: %w", err)
+		}
+		w.Header().Set("Idempotency-Key", idempotencyKey)
+		return &HTTPError{StatusCode: http.StatusUnprocessableEntity, Message: "operation blocked by AML rules"}
+	}
+	if err := h.transactionStore.CreateTransactionWithTx(dbTx, tx); err != nil {
+		return transactionWriteError(err, "create transaction")
+	}
+	if err := h.amlDecision.PersistAMLDecisionWithTx(r.Context(), dbTx, tx, prepared); err != nil {
+		return fmt.Errorf("persist AML decision and flags: %w", err)
 	}
 
 	// Blocages KYC (pièce absente ou expirée, client à risque élevé) : le rollback annule l'opération.
@@ -198,10 +293,19 @@ func (h *Handler) HandleCreateTransaction(w http.ResponseWriter, r *http.Request
 			return fmt.Errorf("failed to commit transaction: %w", err)
 		}
 	}
+	w.Header().Set("Idempotency-Key", idempotencyKey)
 	// Confirmation par SMS et e-mail au client (mode test : fichiers dans outbox/).
 	h.notifyTransaction(tx.ID)
 
 	return WriteJson(w, http.StatusCreated, tx)
+}
+
+func lockAMLSubmission(store storage.TransactionStorage, tx *sql.Tx, key string) error {
+	locker, ok := store.(interface{ LockAMLSubmission(*sql.Tx, string) error })
+	if !ok {
+		return fmt.Errorf("transaction storage does not support AML idempotency locking")
+	}
+	return locker.LockAMLSubmission(tx, key)
 }
 
 // HandleListTransactions renvoie une page de transactions avec le client associé.
@@ -414,6 +518,9 @@ func customerFromTransactionRequest(req CreateTransactionCustomerRequest) (*cust
 func (p CreateTransactionPayload) transactionRequest() CreateTransactionRequest {
 	if p.Transaction != nil {
 		req := *p.Transaction
+		if req.IdempotencyKey == "" {
+			req.IdempotencyKey = p.IdempotencyKey
+		}
 		if req.TargetCurrency == "" {
 			req.TargetCurrency = p.TargetCurrency
 		}
@@ -433,6 +540,7 @@ func (p CreateTransactionPayload) transactionRequest() CreateTransactionRequest 
 	}
 
 	return CreateTransactionRequest{
+		IdempotencyKey: p.IdempotencyKey,
 		Amount:         p.Amount,
 		Currency:       p.Currency,
 		TargetCurrency: p.TargetCurrency,

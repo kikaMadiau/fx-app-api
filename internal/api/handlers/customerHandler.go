@@ -137,7 +137,11 @@ func (h *Handler) HandleGetCustomer(w http.ResponseWriter, r *http.Request) erro
 		return badRequest("invalid customer id", err)
 	}
 
-	customer, err := h.customerStore.GetCustomer(id)
+	scoped, ok := h.customerStore.(storage.ScopedCustomerStorage)
+	if !ok {
+		return fmt.Errorf("customer repository does not support store-scoped reads")
+	}
+	customer, err := scoped.GetCustomerInStore(id, traderservices.RequestStoreScope(r))
 	if err != nil {
 		return customerWriteError(err, "get customer")
 	}
@@ -151,7 +155,11 @@ func (h *Handler) HandleUpdateCustomer(w http.ResponseWriter, r *http.Request) e
 		return badRequest("invalid customer id", err)
 	}
 
-	customer, err := h.customerStore.GetCustomer(id)
+	scoped, ok := h.customerStore.(storage.ScopedCustomerStorage)
+	if !ok {
+		return fmt.Errorf("customer repository does not support store-scoped reads")
+	}
+	customer, err := scoped.GetCustomerInStore(id, traderservices.RequestStoreScope(r))
 	if err != nil {
 		return customerWriteError(err, "get customer")
 	}

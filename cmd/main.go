@@ -81,6 +81,9 @@ func main() {
 	if err := storage.InitTenantSchema(store.DB()); err != nil {
 		log.Fatalf("Failed to initialize tenant schema: %v", err)
 	}
+	if err := storage.InitAMLSchema(store.DB()); err != nil {
+		log.Fatalf("Failed to initialize AML schema: %v", err)
+	}
 	if err := bootstrapAdmin(traderRepo); err != nil {
 		log.Fatalf("Failed to bootstrap administrator: %v", err)
 	}

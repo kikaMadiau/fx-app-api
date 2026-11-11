@@ -1,5 +1,7 @@
 # Configuration API
 API_ADDR=:3000
+# Préfixe partagé par toutes les routes API (valeur par défaut : /v1)
+API_PREFIX=/v1
 
 # Taux d'achat/vente et variation affichés sur le tableau de bord (GET /analysais)
 EXCHANGE_RATE_USD_CDF_BUY=2263.3300

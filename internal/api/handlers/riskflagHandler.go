@@ -204,7 +204,12 @@ func (h *Handler) HandleGetRiskFlag(w http.ResponseWriter, r *http.Request) erro
 		return badRequest("invalid risk flag id", err)
 	}
 
-	flag, err := h.riskFlagStore.GetRiskFlag(id)
+	scoped, ok := h.riskFlagStore.(storage.ScopedRiskFlagStorage)
+	if !ok {
+		return fmt.Errorf("risk flag repository does not support store-scoped reads")
+	}
+	storeID := traderservices.RequestStoreScope(r)
+	flag, err := scoped.GetRiskFlagInStore(id, storeID)
 	if err != nil {
 		if errors.Is(err, storage.ErrRiskFlagNotFound) {
 			return notFound("risk flag not found")
@@ -224,7 +229,12 @@ func (h *Handler) HandleDeleteRiskFlag(w http.ResponseWriter, r *http.Request) e
 		return badRequest("invalid risk flag id", err)
 	}
 
-	before, err := h.riskFlagStore.GetRiskFlag(id)
+	scoped, ok := h.riskFlagStore.(storage.ScopedRiskFlagStorage)
+	if !ok {
+		return fmt.Errorf("risk flag repository does not support store-scoped operations")
+	}
+	storeID := traderservices.RequestStoreScope(r)
+	before, err := scoped.GetRiskFlagInStore(id, storeID)
 	if err != nil {
 		if errors.Is(err, storage.ErrRiskFlagNotFound) {
 			return notFound("risk flag not found")
@@ -241,7 +251,7 @@ func (h *Handler) HandleDeleteRiskFlag(w http.ResponseWriter, r *http.Request) e
 			return fmt.Errorf("begin risk flag deletion: %w", err)
 		}
 		defer tx.Rollback()
-		err = store.DeleteRiskFlagWithTx(tx, id)
+		err = store.DeleteRiskFlagWithTxInStore(tx, id, storeID)
 		if err == nil {
 			err = h.recordAuditWithTx(r, tx, "risk_flag.delete", "risk_flag", id, before, map[string]bool{"deleted": true})
 		}
@@ -254,7 +264,7 @@ func (h *Handler) HandleDeleteRiskFlag(w http.ResponseWriter, r *http.Request) e
 			}
 			return fmt.Errorf("failed to delete risk flag or write audit: %w", err)
 		}
-	} else if err := h.riskFlagStore.DeleteRiskFlag(id); err != nil {
+	} else if err := scoped.DeleteRiskFlagInStore(id, storeID); err != nil {
 		if errors.Is(err, storage.ErrRiskFlagNotFound) {
 			return notFound("risk flag not found")
 		}
@@ -293,7 +303,11 @@ func (h *Handler) HandleTransitionRiskFlagStatus(w http.ResponseWriter, r *http.
 	traderID := user.Id
 	var beforeFlag *riskflagentity.RiskFlag
 	if req.Status == string(riskflagentity.RiskFlagStatusResolved) || req.Status == string(riskflagentity.RiskFlagStatusFalsePositive) {
-		flag, err := h.riskFlagStore.GetRiskFlag(id)
+		scoped, ok := h.riskFlagStore.(storage.ScopedRiskFlagStorage)
+		if !ok {
+			return fmt.Errorf("risk flag repository does not support store-scoped reads")
+		}
+		flag, err := scoped.GetRiskFlagInStore(id, traderservices.RequestStoreScope(r))
 		if err != nil {
 			if errors.Is(err, storage.ErrRiskFlagNotFound) {
 				return notFound("risk flag not found")
@@ -333,9 +347,9 @@ func (h *Handler) HandleTransitionRiskFlagStatus(w http.ResponseWriter, r *http.
 			return fmt.Errorf("begin risk flag closure: %w", err)
 		}
 		defer tx.Rollback()
-		updatedFlag, err = h.riskService.Investigation.TransitionRiskFlagWithTx(tx, id, req.Status, traderID, note, req.AssignedTo)
+		updatedFlag, err = h.riskService.Investigation.TransitionRiskFlagInStoreWithTx(tx, id, traderservices.RequestStoreScope(r), req.Status, traderID, note, req.AssignedTo)
 	} else {
-		updatedFlag, err = h.riskService.Investigation.TransitionRiskFlag(id, req.Status, traderID, note, req.AssignedTo)
+		updatedFlag, err = h.riskService.Investigation.TransitionRiskFlagInStore(nil, id, traderservices.RequestStoreScope(r), req.Status, traderID, note, req.AssignedTo)
 	}
 	if err != nil {
 		if errors.Is(err, storage.ErrRiskFlagNotFound) {
@@ -374,13 +388,18 @@ func (h *Handler) HandleGetRiskFlagHistory(w http.ResponseWriter, r *http.Reques
 		return badRequest("invalid risk flag id", err)
 	}
 
-	if _, err := h.riskFlagStore.GetRiskFlag(id); err != nil {
+	scoped, ok := h.riskFlagStore.(storage.ScopedRiskFlagStorage)
+	if !ok {
+		return fmt.Errorf("risk flag repository does not support store-scoped reads")
+	}
+	storeID := traderservices.RequestStoreScope(r)
+	if _, err := scoped.GetRiskFlagInStore(id, storeID); err != nil {
 		if errors.Is(err, storage.ErrRiskFlagNotFound) {
 			return notFound("risk flag not found")
 		}
 		return fmt.Errorf("failed to check risk flag: %w", err)
 	}
-	history, err := h.riskService.Investigation.GetStatusHistory(id)
+	history, err := h.riskService.Investigation.GetStatusHistoryInStore(id, storeID)
 	if err != nil {
 		return fmt.Errorf("failed to get status history: %w", err)
 	}

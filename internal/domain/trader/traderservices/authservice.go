@@ -15,6 +15,9 @@ import (
 // ErrAccountPending : inscription pas encore acceptée par un superviseur du bureau.
 var ErrAccountPending = errors.New("account pending approval")
 
+// ErrInvalidCredentials keeps missing accounts and incorrect passwords indistinguishable.
+var ErrInvalidCredentials = errors.New("invalid credentials")
+
 type AuthService struct {
 	traderRepo storage.TraderStorage
 }
@@ -39,17 +42,20 @@ func (s *AuthService) AuthenticateTrader(email, password string) (*AuthResult, e
 
 	trader, err := s.traderRepo.GetTraderByEmail(email)
 	if err != nil {
-		return nil, fmt.Errorf("invalid credentials")
+		if errors.Is(err, storage.ErrTraderNotFound) {
+			return nil, ErrInvalidCredentials
+		}
+		return nil, fmt.Errorf("failed to load trader for authentication: %w", err)
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(trader.PasswordHash), []byte(password)); err != nil {
-		return nil, fmt.Errorf("invalid credentials")
+		return nil, ErrInvalidCredentials
 	}
 	if !trader.IsActive {
 		// On ne le dit qu'au titulaire du mot de passe : un inconnu reçoit le message habituel.
 		if strings.EqualFold(trader.Status, "PENDING") {
 			return nil, ErrAccountPending
 		}
-		return nil, fmt.Errorf("invalid credentials")
+		return nil, ErrInvalidCredentials
 	}
 
 	token, err := s.IssueToken(trader)

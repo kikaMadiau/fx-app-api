@@ -120,8 +120,11 @@ func (h *Handler) HandleTraderLogin(w http.ResponseWriter, r *http.Request) erro
 	if errors.Is(err, traderauthservice.ErrAccountPending) {
 		return &HTTPError{StatusCode: http.StatusForbidden, Message: "account pending approval"}
 	}
+	if errors.Is(err, traderauthservice.ErrInvalidCredentials) {
+		return &HTTPError{StatusCode: http.StatusUnauthorized, Message: traderauthservice.ErrInvalidCredentials.Error()}
+	}
 	if err != nil {
-		return &HTTPError{StatusCode: http.StatusUnauthorized, Message: err.Error()}
+		return fmt.Errorf("authenticate trader: %w", err)
 	}
 
 	if h.profileRepo != nil {

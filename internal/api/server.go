@@ -101,23 +101,26 @@ func (s *ApiServer) Start() error {
 		log.Println("Rate limiting global activé")
 	}
 
-	// --- Routes Publiques (certaines protégées par reCAPTCHA) ---
-	router.Group(func(r chi.Router) {
-		// Rate limiting spécifique pour l'authentification
-		if s.loginMonitor != nil {
-			r.Use(s.loginMonitor.RateLimitMiddleware())
-		}
-		r.Post("/auth/trader/login", MakeHttpHandleFunc(h.HandleTraderLogin))
-		// Mot de passe oublié : mêmes limites que la connexion.
-		r.Post("/auth/password/forgot", MakeHttpHandleFunc(h.HandleForgotPassword))
-		r.Post("/auth/password/reset", MakeHttpHandleFunc(h.HandleResetPassword))
-		// Créer un compte : seulement avec un numéro d'agrément BCC valable.
-		r.Post("/auth/register", MakeHttpHandleFunc(h.HandleRegister))
-	})
+	// Le préfixe est configuré une seule fois pour l'ensemble des routes API.
+	router.Route(apiPrefix(), func(r chi.Router) {
+		// --- Routes Publiques (certaines protégées par reCAPTCHA) ---
+		r.Group(func(r chi.Router) {
+			// Rate limiting spécifique pour l'authentification
+			if s.loginMonitor != nil {
+				r.Use(s.loginMonitor.RateLimitMiddleware())
+			}
+			r.Post("/auth/trader/login", MakeHttpHandleFunc(h.HandleTraderLogin))
+			// Mot de passe oublié : mêmes limites que la connexion.
+			r.Post("/auth/password/forgot", MakeHttpHandleFunc(h.HandleForgotPassword))
+			r.Post("/auth/password/reset", MakeHttpHandleFunc(h.HandleResetPassword))
+			// Créer un compte : seulement avec un numéro d'agrément BCC valable.
+			r.Post("/auth/register", MakeHttpHandleFunc(h.HandleRegister))
+		})
 
-	router.Group(func(r chi.Router) {
-		r.Use(middlewareInternal.AuthMiddleware(s.traderRepo))
-		registerProtectedRoutes(r, h)
+		r.Group(func(r chi.Router) {
+			r.Use(middlewareInternal.AuthMiddleware(s.traderRepo))
+			registerProtectedRoutes(r, h)
+		})
 	})
 
 	log.Println("API server running on", s.listenAddr)
@@ -132,6 +135,14 @@ func (s *ApiServer) Start() error {
 		MaxHeaderBytes:    1 << 20,
 	}
 	return server.ListenAndServe()
+}
+
+func apiPrefix() string {
+	prefix := strings.TrimSpace(getEnvOrDefault("API_PREFIX", "/v1"))
+	if prefix == "" || prefix == "/" {
+		return "/"
+	}
+	return "/" + strings.Trim(prefix, "/")
 }
 
 type protectedRoute struct {

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	amlservice "fx-app-api/internal/domain/aml/service"
 	customerentity "fx-app-api/internal/domain/customer/entity"
 	"fx-app-api/internal/domain/customer/iddocument"
 	"fx-app-api/internal/domain/customer/kycrisk"
@@ -30,6 +31,7 @@ type Handler struct {
 	transactionStore  storage.TransactionStorage
 	riskFlagStore     storage.RiskFlagStorage
 	riskService       *riskservice.RiskService
+	amlDecision       *amlservice.DecisionService
 	customerService   *customerservice.CustomerService
 	authService       *traderauthservice.AuthService
 	dashboardRepo     *dashboardrepository.DashboardRepository
@@ -68,6 +70,7 @@ type transactionalTraderStore interface {
 type transactionalRiskFlagStore interface {
 	BeginTx() (*sql.Tx, error)
 	DeleteRiskFlagWithTx(*sql.Tx, int) error
+	DeleteRiskFlagWithTxInStore(*sql.Tx, int, int) error
 }
 
 func (h *Handler) SetAuditLogger(logger AuditLogger) { h.auditLogger = logger }
@@ -128,6 +131,12 @@ func New(
 	riskService *riskservice.RiskService,
 	customerService *customerservice.CustomerService,
 ) *Handler {
+	var amlSignals interface {
+		AMLSignals(*sql.Tx, int, int) *kycrisk.Signals
+	}
+	if riskService != nil {
+		amlSignals = riskService
+	}
 	return &Handler{
 		traderStore:      traderStore,
 		customerStore:    customerStore,
@@ -135,6 +144,7 @@ func New(
 		riskFlagStore:    riskFlagStore,
 		riskService:      riskService,
 		customerService:  customerService,
+		amlDecision:      amlservice.NewDecisionService(customerStore, transactionStore, riskFlagStore, customerService, amlSignals),
 		authService:      traderauthservice.NewAuthService(traderStore),
 	}
 }

@@ -132,18 +132,34 @@ func (r *CustomerRepository) CreateCustomerWithTx(tx *sql.Tx, customer *entity.C
 	if err := normalizeCustomerPhone(customer); err != nil {
 		return err
 	}
+	var personID int
+	if strings.TrimSpace(customer.IDNumber) != "" {
+		err := pickExecutor(r.store.DB(), tx).QueryRow(`
+			INSERT INTO persons(full_name, phone, id_type, id_number) VALUES($1,$2,$3,$4)
+			ON CONFLICT (id_type,id_number) WHERE id_number <> ''
+			DO UPDATE SET updated_at=persons.updated_at RETURNING id`,
+			customer.FullName, customer.Phone, customer.IDType, customer.IDNumber).Scan(&personID)
+		if err != nil {
+			return fmt.Errorf("resolve person identity: %w", err)
+		}
+	} else {
+		if err := pickExecutor(r.store.DB(), tx).QueryRow(`INSERT INTO persons(full_name,phone,id_type,id_number) VALUES($1,$2,$3,'') RETURNING id`, customer.FullName, customer.Phone, customer.IDType).Scan(&personID); err != nil {
+			return fmt.Errorf("create person identity: %w", err)
+		}
+	}
 
 	query := `
 		INSERT INTO customers (
-			full_name, id_number, id_type, phone, address, created_at, updated_at, store_id
+			person_id, full_name, id_number, id_type, phone, address, created_at, updated_at, store_id
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, COALESCE(NULLIF($8, 0), ` + defaultStoreSQL + `)
+			$1, $2, $3, $4, $5, $6, $7, $8, COALESCE(NULLIF($9, 0), ` + defaultStoreSQL + `)
 		) RETURNING id, created_at, updated_at, store_id`
 
 	customer.CreatedAt = time.Now()
 	customer.UpdatedAt = time.Now()
 
 	err := pickExecutor(r.store.DB(), tx).QueryRow(query,
+		personID,
 		customer.FullName,
 		customer.IDNumber,
 		customer.IDType,
@@ -168,15 +184,34 @@ func (r *CustomerRepository) GetCustomer(id int) (*entity.Customer, error) {
 
 // GetCustomerWithTx récupère un client par son ID, dans la transaction fournie si elle n'est pas nil.
 func (r *CustomerRepository) GetCustomerWithTx(tx *sql.Tx, id int) (*entity.Customer, error) {
+	return r.getCustomerWithTx(tx, id, nil)
+}
+
+// GetCustomerInStore hides customers owned by a different store as not found.
+func (r *CustomerRepository) GetCustomerInStore(id, storeID int) (*entity.Customer, error) {
+	return r.getCustomerWithTx(nil, id, &storeID)
+}
+
+// GetCustomerWithTxInStore scopes a customer read to the authenticated store.
+func (r *CustomerRepository) GetCustomerWithTxInStore(tx *sql.Tx, id, storeID int) (*entity.Customer, error) {
+	return r.getCustomerWithTx(tx, id, &storeID)
+}
+
+func (r *CustomerRepository) getCustomerWithTx(tx *sql.Tx, id int, storeID *int) (*entity.Customer, error) {
 	query := `
 		SELECT id, full_name, id_number, COALESCE(id_type, ''), COALESCE(phone, ''),
 		       COALESCE(address, ''), created_at, updated_at, deleted_at,
 		       COALESCE(risk_level, ''), COALESCE(risk_score, 0), COALESCE(email, ''), store_id
 		FROM customers
 		WHERE id = $1 AND deleted_at IS NULL`
+	args := []any{id}
+	if storeID != nil {
+		query += " AND ($2 = 0 OR store_id = $2)"
+		args = append(args, *storeID)
+	}
 	customer := &entity.Customer{}
 
-	err := pickExecutor(r.store.DB(), tx).QueryRow(query, id).Scan(
+	err := pickExecutor(r.store.DB(), tx).QueryRow(query, args...).Scan(
 		&customer.ID,
 		&customer.FullName,
 		&customer.IDNumber,
@@ -220,6 +255,27 @@ func (r *CustomerRepository) GetCustomerByPhone(phone string, storeID int) (*ent
 	return customer, nil
 }
 
+func (r *CustomerRepository) GetCustomerByPhoneInStore(phone string, storeID int) (*entity.Customer, error) {
+	return r.GetCustomerByPhone(phone, storeID)
+}
+
+func (r *CustomerRepository) FindOrCreateCustomerWithTx(tx *sql.Tx, customer *entity.Customer) (bool, error) {
+	if strings.TrimSpace(customer.Phone) != "" {
+		existing, err := r.GetCustomerByPhone(customer.Phone, customer.StoreID)
+		if err == nil {
+			*customer = *existing
+			return false, nil
+		}
+		if !errors.Is(err, storage.ErrCustomerNotFound) {
+			return false, err
+		}
+	}
+	if err := r.CreateCustomerWithTx(tx, customer); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // UpdateCustomer met à jour les informations d'un client existant dans la base de données.
 func (r *CustomerRepository) UpdateCustomer(customer *entity.Customer) error {
 	return r.UpdateCustomerWithTx(nil, customer)
@@ -236,7 +292,7 @@ func (r *CustomerRepository) UpdateCustomerWithTx(tx *sql.Tx, customer *entity.C
 		UPDATE customers SET
 			full_name = $1, id_number = $2, id_type = $3, phone = $4, address = $5,
 			risk_level = $6, risk_score = $7, updated_at = $8
-		WHERE id = $9 AND deleted_at IS NULL`
+		WHERE id = $9 AND store_id = $10 AND deleted_at IS NULL`
 
 	customer.UpdatedAt = time.Now()
 
@@ -250,6 +306,7 @@ func (r *CustomerRepository) UpdateCustomerWithTx(tx *sql.Tx, customer *entity.C
 		customer.RiskScore,
 		customer.UpdatedAt,
 		customer.ID,
+		customer.StoreID,
 	)
 	if err != nil {
 		return mapCustomerWriteError("update customer", err)

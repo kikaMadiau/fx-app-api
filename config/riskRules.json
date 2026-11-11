@@ -152,5 +152,176 @@
       "enabled": true,
       "alert": false
     }
+  ],
+  "new_rules": [
+    {
+      "code": "CAP_JOUR",
+      "type": "cap_jour",
+      "version": "1.0.0",
+      "category": "HARD_BLOCK",
+      "mode": "SHADOW",
+      "enabled": true,
+      "score": 0,
+      "severity": "CRITICAL",
+      "action": "BLOCK",
+      "parameters": {
+        "limit_usd_minor": 1000000,
+        "scope": "ALL_OPERATORS",
+        "cross_operator_action": "ALERT_CRITICAL",
+        "cross_operator_severity": "CRITICAL",
+        "amount_basis": "GROSS",
+        "cancelled_policy": "COUNT"
+      }
+    },
+    {
+      "code": "CUMUL_ALERTE",
+      "type": "cumul_alerte",
+      "version": "1.0.0",
+      "category": "DETECTION",
+      "mode": "SHADOW",
+      "enabled": true,
+      "score": 0,
+      "severity": "HIGH",
+      "action": "ALERT",
+      "parameters": {
+        "alert_threshold_usd_minor": 900000,
+        "block_threshold_usd_minor": 1000000,
+        "scope": "ALL_OPERATORS",
+        "amount_basis": "GROSS",
+        "cancelled_policy": "COUNT",
+        "alert_action": "ALERT",
+        "block_action": "BLOCK",
+        "block_severity": "CRITICAL"
+      }
+    },
+    {
+      "code": "FRACTIONNEMENT",
+      "type": "fractionnement",
+      "version": "1.0.0",
+      "category": "DETECTION",
+      "mode": "SHADOW",
+      "enabled": true,
+      "score": 0,
+      "severity": "HIGH",
+      "action": "ALERT",
+      "parameters": {
+        "window": "24h",
+        "minimum_count": 3,
+        "minimum_total_usd_minor": 500000,
+        "minimum_distinct_operators": 2,
+        "amount_basis": "GROSS",
+        "cancelled_policy": "COUNT"
+      }
+    },
+    {
+      "code": "ALLER_RETOUR",
+      "type": "aller_retour",
+      "version": "1.0.0",
+      "category": "DETECTION",
+      "mode": "SHADOW",
+      "enabled": true,
+      "score": 0,
+      "severity": "MEDIUM",
+      "action": "ALERT",
+      "parameters": {
+        "pair_window": "72h",
+        "cycle_window": "168h",
+        "maximum_amount_gap_bps": 1000,
+        "minimum_amount_usd_minor": 100000,
+        "minimum_cycles": 2,
+        "amount_basis": "GROSS",
+        "cancelled_policy": "COUNT"
+      }
+    },
+    {
+      "code": "FT_SCHEMA",
+      "type": "ft_schema",
+      "version": "1.0.0",
+      "category": "DETECTION",
+      "mode": "SHADOW",
+      "enabled": true,
+      "score": 0,
+      "severity": "HIGH",
+      "action": "ALERT",
+      "parameters": {
+        "window": "168h",
+        "minimum_operations": 5,
+        "maximum_single_amount_usd_minor": 100000,
+        "linked_by": ["BENEFICIARY", "PHONE", "LISTED_PERSON"],
+        "risk_zones": [],
+        "risk_zone_score": 0,
+        "amount_basis": "GROSS",
+        "cancelled_policy": "COUNT"
+      }
+    },
+    {
+      "code": "SANCTIONS",
+      "type": "sanctions",
+      "version": "1.0.0",
+      "category": "SCREENING",
+      "mode": "SHADOW",
+      "enabled": false,
+      "score": 0,
+      "severity": "CRITICAL",
+      "action": "BLOCK",
+      "parameters": {"source_ids": []}
+    },
+    {
+      "code": "IDENT_COMPLETE",
+      "type": "ident_complete",
+      "version": "1.0.0",
+      "category": "HARD_BLOCK",
+      "mode": "SHADOW",
+      "enabled": true,
+      "score": 0,
+      "severity": "HIGH",
+      "action": "BLOCK",
+      "parameters": {
+        "require_customer": true,
+        "require_beneficial_owner": true,
+        "require_document": true,
+        "require_valid_document": true,
+        "require_address": true,
+        "require_photo": true
+      }
+    },
+    {
+      "code": "AGREMENT_ACTIF",
+      "type": "agrement_actif",
+      "version": "1.0.0",
+      "category": "HARD_BLOCK",
+      "mode": "SHADOW",
+      "enabled": true,
+      "score": 0,
+      "severity": "CRITICAL",
+      "action": "BLOCK",
+      "parameters": {"active_statuses": ["ACTIVE"]}
+    },
+    {
+      "code": "OPERATION_INTERDITE",
+      "type": "operation_interdite",
+      "version": "1.0.0",
+      "category": "HARD_BLOCK",
+      "mode": "SHADOW",
+      "enabled": true,
+      "score": 0,
+      "severity": "CRITICAL",
+      "action": "BLOCK",
+      "parameters": {
+        "prohibited_types": ["DEPOSIT", "FOREIGN_TRANSFER", "PAYMENT_INSTRUMENT", "BANKNOTE_IMPORT", "BANKNOTE_EXPORT", "THIRD_PARTY_TRANSFER", "CREDIT"]
+      }
+    },
+    {
+      "code": "ECART_TAUX",
+      "type": "ecart_taux",
+      "version": "1.0.0",
+      "category": "DETECTION",
+      "mode": "SHADOW",
+      "enabled": false,
+      "score": 0,
+      "severity": "MEDIUM",
+      "action": "ALERT",
+      "parameters": {}
+    }
   ]
 }

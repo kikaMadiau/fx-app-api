@@ -125,6 +125,87 @@ func (r *TransactionRepository) CreateTransactionWithTx(dbTx *sql.Tx, tx *entity
 	return nil
 }
 
+// BeginWithNewCustomer creates or reuses a customer inside a new SQL transaction without
+// inserting the exchange operation. It lets the AML pipeline evaluate before operation INSERT.
+func (r *TransactionRepository) BeginWithNewCustomer(customer *customerentity.Customer) (*sql.Tx, error) {
+	return r.beginWithNewCustomer(customer, "")
+}
+
+// BeginWithNewCustomerForAML locks a client submission key before looking up or creating its customer.
+func (r *TransactionRepository) BeginWithNewCustomerForAML(customer *customerentity.Customer, key string) (*sql.Tx, error) {
+	if strings.TrimSpace(key) == "" {
+		return nil, errors.New("idempotency key is required")
+	}
+	return r.beginWithNewCustomer(customer, key)
+}
+
+func (r *TransactionRepository) beginWithNewCustomer(customer *customerentity.Customer, key string) (*sql.Tx, error) {
+	if customer == nil {
+		return nil, errors.New("customer is required")
+	}
+	normalizedPhone, err := storage.NormalizePhone(customer.Phone)
+	if err != nil {
+		return nil, err
+	}
+	customer.Phone = normalizedPhone
+	if strings.TrimSpace(customer.IDNumber) == "" {
+		customer.IDNumber = normalizedPhone
+	}
+	dbTx, err := r.store.DB().Begin()
+	if err != nil {
+		return nil, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	if key != "" {
+		if err := LockAMLSubmission(dbTx, key); err != nil {
+			_ = dbTx.Rollback()
+			return nil, err
+		}
+	}
+	existing, err := selectCustomerByPhone(dbTx, normalizedPhone, customer.StoreID, true)
+	switch {
+	case err == nil:
+		*customer = *existing
+	case errors.Is(err, sql.ErrNoRows):
+		if err := customerrepository.NewCustomerRepository(r.store).CreateCustomerWithTx(dbTx, customer); err != nil {
+			_ = dbTx.Rollback()
+			return nil, err
+		}
+	default:
+		_ = dbTx.Rollback()
+		return nil, fmt.Errorf("failed to check existing customer: %w", err)
+	}
+	return dbTx, nil
+}
+
+func LockAMLSubmission(tx *sql.Tx, key string) error {
+	if tx == nil || strings.TrimSpace(key) == "" {
+		return errors.New("idempotency lock requires transaction and key")
+	}
+	if _, err := tx.Exec(`SELECT pg_advisory_xact_lock(hashtextextended('AML-IDEMP:' || $1,0))`, key); err != nil {
+		return fmt.Errorf("lock transaction submission key: %w", err)
+	}
+	return nil
+}
+
+// FindCustomerByPhoneWithTx resolves a customer without inserting an operation.
+func (r *TransactionRepository) FindCustomerByPhoneWithTx(dbTx *sql.Tx, phone string, storeID int) (*customerentity.Customer, error) {
+	if dbTx == nil {
+		return nil, errors.New("SQL transaction is required")
+	}
+	normalizedPhone, err := storage.NormalizePhone(phone)
+	if err != nil {
+		return nil, err
+	}
+	customer, err := selectCustomerByPhone(dbTx, normalizedPhone, storeID, true)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, storage.ErrCustomerNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get customer by phone: %w", err)
+	}
+	return customer, nil
+}
+
 // CreateTransactionWithNewCustomer enregistre un client puis sa transaction dans une seule transaction SQL.
 // Si un client actif existe déjà avec ce téléphone, il est réutilisé sans être modifié, et customer
 // est remplacé par ce client existant.
@@ -457,8 +538,12 @@ func insertTransaction(q rowQuerier, tx *entity.Transaction) error {
 			(SELECT store_id FROM customers WHERE id = $11)
 		) RETURNING id, created_at, updated_at, store_id`
 
-	tx.CreatedAt = time.Now()
-	tx.UpdatedAt = time.Now()
+	if tx.CreatedAt.IsZero() {
+		tx.CreatedAt = time.Now().UTC()
+	}
+	if tx.UpdatedAt.IsZero() {
+		tx.UpdatedAt = tx.CreatedAt
+	}
 
 	return q.QueryRow(query, tx.Amount, tx.Currency, tx.TargetCurrency, tx.Type, tx.Rate, tx.ConvertedAmount, tx.RiskLevel, tx.RiskScore, tx.Status, tx.TraderID, tx.CustomerID, tx.CreatedAt, tx.UpdatedAt).Scan(&tx.ID, &tx.CreatedAt, &tx.UpdatedAt, &tx.StoreID)
 }

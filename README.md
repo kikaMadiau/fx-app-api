@@ -12,13 +12,13 @@ API Go pour la gestion de transactions de change, avec profils KYC clients, anal
 - Recalcul manuel du risque KYC client.
 - Creation de transaction FX avec conversion calculee depuis le taux configure cote serveur.
 - Creation de transaction pour nouveau client ou client existant recherche par telephone.
-- Analyse AML/KYC synchrone apres creation de transaction.
+- Evaluation AML synchrone avant insertion de la transaction, avec journalisation de la decision.
 - Creation automatique de `risk_flags` quand une regle AML/KYC est declenchee.
 - Consultation, filtrage, creation manuelle et suppression logique des `risk_flags`.
 - Initialisation automatique des tables PostgreSQL au demarrage.
 - RBAC par permissions avec les rôles TRADER, COMPLIANCE_OFFICER, SUPERVISOR et ADMIN.
-- Rollback SQL automatique si l'analyse AML echoue apres creation de transaction.
-- Transactions SQL englobant creation + analyse AML pour la coherence des donnees.
+- Decision AML, transaction, alertes et evenements outbox ecrits dans une transaction SQL.
+- Verrou consultatif par personne et cle d'idempotence pour les soumissions de transaction.
 
 ## Stack
 
@@ -94,6 +94,7 @@ Au demarrage, l'application:
 | `DB_SSLMODE` | `prefer` en local, `require` en production | Mode SSL PostgreSQL. En production, privilégier `verify-full`. |
 | `LEGACY_STORE_NAME` | `Demo Maison de Change` | Nom du store utilisé pour rattacher les données historiques sans store. |
 | `LEGACY_STORE_BCC_LICENSE_NUMBER` | `DEMO-0001` | Agrément du store de migration. Remplacez cette valeur de démonstration par un agrément valide. |
+| `RISK_RULES_CONFIG_PATH` | `config/risk_rules.json` (repli: `config/riskRules.json`) | Fichier JSON des règles historiques chargees au demarrage. Les regles parametrees et leurs surcharges par store sont stockees dans PostgreSQL. |
 
 La migration de tenant crée ou retrouve ce store de façon idempotente, puis rattache
 les clients, profils KYC, transactions, alertes, historiques et traders sans store.
@@ -739,15 +740,32 @@ Body historique toujours accepte:
 }
 ```
 
-Response `201 Created`: objet `Transaction` apres conversion et analyse AML/KYC synchrone.
+Response `201 Created`: objet `Transaction` apres conversion, decision AML et
+scoring historique. Une relecture idempotente d'une transaction deja acceptee
+renvoie `200 OK` avec l'objet existant.
+
+Le client peut envoyer `Idempotency-Key` (ou `idempotency_key` dans le JSON) pour
+identifier une soumission. Reutiliser la meme cle et le meme contenu renvoie la
+transaction deja creee; reutiliser la cle avec un contenu different renvoie
+`409 Conflict`. Sans cle fournie, le serveur en genere une et la renvoie dans
+l'en-tete `Idempotency-Key`; pour beneficier de l'idempotence lors d'un retry, le
+client doit conserver et reutiliser sa propre cle.
+
+La decision AML `BLOCK` est journalisee puis renvoyee en `422 Unprocessable
+Entity`, sans creer de transaction. Une decision `ACCEPT_WITH_APPROVAL` cree la
+transaction avec le statut `PENDING`. Une donnee obligatoire introuvable pour
+une regle en mode `ENFORCE` renvoie `503 Service Unavailable` et annule la
+transaction SQL.
 
 Erreurs principales:
 
 - `400 Bad Request`: payload invalide, telephone invalide, champs transaction manquants, ou plusieurs references client fournies.
 - `404 Not Found`: `client_phone` ne correspond a aucun client existant.
-- `409 Conflict`: tentative de creation d'un nouveau client avec un telephone deja utilise.
+- `409 Conflict`: telephone deja utilise lors d'une creation de client, ou cle d'idempotence reutilisee avec un contenu different.
+- `422 Unprocessable Entity`: decision AML bloquante; la decision est conservee dans le journal AML, mais aucune transaction n'est creee.
+- `503 Service Unavailable`: une regle `ENFORCE` ne peut pas etre evaluee faute d'une donnee obligatoire; la transaction est annulee.
 
-Le backend normalise toujours le numero de telephone avant la recherche. Pour un nouveau client, le client et la transaction sont crees dans une meme transaction SQL: si l'une des deux insertions echoue, toute l'operation est annulee.
+Le backend normalise toujours le numero de telephone avant la recherche. La decision AML, la creation eventuelle du client, la transaction, les alertes et les evenements outbox sont coordonnes dans une transaction SQL. Une decision bloquante conserve son journal sans inserer la transaction.
 
 ```json
 {
@@ -1389,18 +1407,72 @@ Reponse `204 No Content`. La suppression est logique via `deleted_at`.
 
 ## Analyse AML/KYC
 
-`RiskService.AnalyzeTransactionAndCustomer` est execute pendant chaque `POST /transactions`, apres la persistence de la transaction et avant la reponse HTTP.
+Chaque `POST /transactions` passe par le coordinateur AML avant l'insertion de
+la transaction. Le coordinateur charge le catalogue effectif des regles,
+construit le contexte d'evaluation, applique le moteur et persiste la decision
+dans la transaction SQL de la requete. Le verrou consultatif PostgreSQL pris
+par `person_id` serialise les evaluations concurrentes d'une meme personne.
 
-Flux:
+### Pipeline de decision
 
-1. recuperation du client;
-2. recuperation du profil KYC si disponible;
-3. recuperation de l'historique transactionnel du client sur 30 jours;
-4. execution des regles transactionnelles;
-5. mise a jour du risque transaction;
-6. execution des regles KYC/client;
-7. creation des `risk_flags` pour toutes les regles declenchees;
-8. mise a jour du risque global client avec `transactionRisk.Score + customerRisk.Score`.
+Les regles implementent `Evaluate(ctx, EvalContext)` et renvoient un resultat
+structure avec outcome, score, raisons et preuves. Le registre les execute sans
+qu'une regle appelle une autre. Le pipeline traite les familles dans cet ordre:
+
+1. `HARD_BLOCK`, avec arret au premier blocage;
+2. `SCREENING`;
+3. `KYC_LEVEL`;
+4. `DETECTION`, avec aggregation des scores;
+5. decision finale (`ACCEPT`, `ACCEPT_WITH_APPROVAL` ou `BLOCK`);
+6. persistance de la decision, des alertes et des evenements outbox.
+
+Les regles en `SHADOW` sont journalisees sans modifier la decision. Les erreurs
+d'evaluation en `SHADOW` sont consignees comme evaluation ignoree; une erreur ou
+une donnee obligatoire indisponible en `ENFORCE` echoue de maniere fermee. Les
+regles suivantes apres un hard block sont journalisees comme non evaluees.
+
+### Catalogue et modes
+
+Le catalogue parametre est conserve dans `aml_rules`; `aml_rule_overrides`
+permet une surcharge par store. Chaque entree porte code, version, categorie,
+mode (`OFF`, `SHADOW`, `ENFORCE`), activation, parametres JSON, severite,
+action, portee et dates d'effet. Les parametres sont valides par le decodeur
+typé de la regle. Les definitions historiques restent chargees depuis le
+fichier JSON indique par `RISK_RULES_CONFIG_PATH`.
+
+`InitAMLSchema` initialise notamment `aml_rules`, `aml_rule_overrides`,
+`aml_decisions`, `aml_person_daily`, `aml_bcc_rates` et `aml_outbox`. Le journal
+`aml_decisions` est append-only et conserve les evaluations, y compris les
+regles ignorees ou non evaluees. Les flags AML et les evenements
+`operation.created` / `alert.created` sont ecrits dans la meme transaction SQL.
+L'outbox est persistee, mais aucun worker de publication/dispatch n'est encore
+branche.
+
+### Taux BCC et montants
+
+Le moteur utilise des montants AML en unites mineures et un taux BCC journalier
+enregistre dans `aml_bcc_rates` (`currency`, `reference_day`,
+`units_per_usd_ppm`, source et date de publication). Les taux sont immuables par
+jour/devise et doivent etre alimentes par un processus de confiance; aucun flux
+BCC automatique ni endpoint d'import n'est branche. Le moteur ne substitue pas
+le taux commercial de la transaction au taux de reference AML. Sans taux requis,
+une regle `SHADOW` est consignee comme ignoree et une regle `ENFORCE` fait
+echouer la requete avec `503`. Le handler historique accepte toujours des
+montants JSON decimaux; la conversion vers les unites mineures AML rejette une
+valeur qui n'est pas un nombre exact de centimes.
+
+### Compatibilite avec le scoring historique
+
+`RiskService.AnalyzeTransactionAndCustomerWithTx` reste appele apres
+l'insertion pour conserver le scoring historique des transactions et clients.
+Le moteur enregistre aussi les resultats de ses regles historiques dans le
+journal AML; le service historique continue de calculer les scores et de creer
+les `risk_flags`. Cette coexistence est transitoire: l'unification du scoring
+historique avec le pipeline AML reste a faire. Une erreur dans ce traitement
+annule la transaction SQL.
+
+Les seuils historiques ci-dessous documentent ce scoring de compatibilite; les
+seuils des regles parametrees sont configures dans le catalogue AML.
 
 ### Regles Transactionnelles
 
@@ -1550,10 +1622,11 @@ GOCACHE=/private/tmp/fx-app-api-go-build go test ./...
 
 ## Limitations Actuelles
 
-- `RuleConfig.Enabled` existe mais n'est pas encore utilise pour desactiver une regle.
-- Pas encore de screening sanctions, PEP, listes noires ou adverse media.
-- Pas encore de screening sanctions, PEP, listes noires ou adverse media.
-- Pas encore de gestion documentaire KYC: documents, expiration, verification de piece, justificatif d'adresse.
+- Les taux BCC doivent etre alimentes par un processus externe; aucun flux BCC ni endpoint d'import n'est branche.
+- Les evenements sont ecrits dans `aml_outbox`, mais aucun worker ne les publie vers un broker ou un service temps reel.
+- Aucune source externe de screening sanctions/PEP, listes noires ou adverse media n'est branchee. Une regle de screening `ENFORCE` sans donnees requises fait echouer l'evaluation.
+- Le scoring historique `RiskService` coexiste encore avec le moteur et reste appele apres l'insertion; son unification est a terminer.
+- La gestion documentaire KYC ne fournit pas encore un historique append-only complet des pieces, renouvellements et verifications.
 - Les rôles valides sont `TRADER`, `COMPLIANCE_OFFICER`, `SUPERVISOR` et `ADMIN`.
 
 ## Historique Des Modifications
@@ -1571,13 +1644,13 @@ GOCACHE=/private/tmp/fx-app-api-go-build go test ./...
 
 - **RBAC par role (version initiale)** : documentation historique de la première configuration.
 
-- **Rollback SQL apres analyse AML** : Les transactions SQL englobent maintenant la creation de transaction et l'analyse AML.
+- **Decision AML transactionnelle** : La decision, les alertes, l'outbox et la transaction eventuelle sont coordonnees dans une transaction SQL.
   - Si l'analyse AML echoue, toute la transaction est rollbackee
   - Aucune donnee n'est persistee si l'analyse echoue
   - Nouvelles methodes `WithTx` dans les repositories pour supporter les transactions SQL
 
 ### 2026-08-20
 
-- **Analyse AML/KYC synchrone** : L'analyse est executee apres la creation de transaction et avant la reponse HTTP.
+- **Analyse AML/KYC synchrone** : La decision AML est executee avant l'insertion de la transaction et le scoring historique est finalise avant la reponse HTTP.
 - **Scoring de risque** : Calcul automatique de `risk_score` et `risk_level` pour les transactions et les clients.
 - **Risk flags** : Creation automatique d'alertes quand les regles AML/KYC sont declenchees.

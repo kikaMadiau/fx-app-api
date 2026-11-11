@@ -118,6 +118,11 @@ func (s *RiskService) SetSignalSource(source SignalSource) {
 	s.signals = source
 }
 
+// AMLSignals exposes the transaction-local KYC snapshot to the AML coordinator.
+func (s *RiskService) AMLSignals(tx *sql.Tx, customerID, excludeTransactionID int) *kycrisk.Signals {
+	return s.loadSignals(tx, customerID, excludeTransactionID)
+}
+
 func (s *RiskService) loadSignals(dbTx *sql.Tx, customerID, transactionID int) *kycrisk.Signals {
 	if s.signals == nil {
 		return nil
@@ -268,8 +273,16 @@ func (s *RiskService) AnalyzeTransactionAndCustomerWithTx(dbTx *sql.Tx, tx *tran
 		flag.TraderId = tx.TraderID
 		flag.CustomerId = tx.CustomerID
 		if err := s.riskFlagRepo.CreateRiskFlagWithTx(dbTx, flag); err != nil {
-			// Logguer l'erreur mais ne pas bloquer le flux principal
-			log.Printf("Warning: failed to create risk flag for transaction %d: %v", tx.ID, err)
+			return fmt.Errorf("failed to persist risk flag %q for transaction %d: %w", flag.Flag, tx.ID, err)
+		}
+		if dbTx != nil {
+			payload, err := json.Marshal(map[string]any{"risk_flag": flag})
+			if err != nil {
+				return fmt.Errorf("marshal risk flag outbox event: %w", err)
+			}
+			if _, err := dbTx.Exec(`INSERT INTO aml_outbox(event_type,aggregate_type,aggregate_id,payload) VALUES('alert.created','risk_flag',$1,$2::jsonb)`, flag.ID, payload); err != nil {
+				return fmt.Errorf("append risk flag outbox event %d: %w", flag.ID, err)
+			}
 		}
 	}
 

@@ -23,6 +23,7 @@ const (
 	CustomerUpdate       = "customer:update"
 	CustomerWrite        = "customer:write"
 	KYCRead              = "kyc:read"
+	KYCCreate            = "kyc:create"
 	KYCUpdate            = "kyc:update"
 	KYCVerify            = "kyc:validate"
 	KYCReassess          = "kyc:reassess"
@@ -43,11 +44,11 @@ const (
 )
 
 var rolePermissions = map[Role]map[string]struct{}{
-	Trader:            set(ProfileRead, ProfileUpdate, CustomerRead, CustomerCreate, CustomerUpdate, CustomerWrite, KYCRead, TransactionCreate, TransactionRead, RiskFlagRead, DashboardRead, AnalysisRead, StoreRead),
-	ComplianceOfficer: set(ProfileRead, ProfileUpdate, CustomerRead, CustomerCreate, CustomerUpdate, CustomerWrite, KYCRead, KYCUpdate, KYCVerify, KYCReassess, TransactionCreate, TransactionRead, RiskFlagCreate, RiskFlagRead, RiskFlagInvestigate, RiskFlagResolve, DashboardRead, AnalysisRead, StoreRead),
-	Supervisor:        set(ProfileRead, ProfileUpdate, CustomerRead, CustomerCreate, TransactionCreate, TransactionRead, RiskFlagRead, DashboardRead, AnalysisRead, StoreRead, StoreManageMembers),
+	Trader:            set(ProfileRead, ProfileUpdate, CustomerRead, CustomerCreate, CustomerUpdate, CustomerWrite, KYCRead, KYCCreate, TransactionCreate, TransactionRead, RiskFlagCreate, RiskFlagRead, DashboardRead, AnalysisRead, StoreRead),
+	ComplianceOfficer: set(ProfileRead, ProfileUpdate, CustomerRead, CustomerCreate, CustomerUpdate, CustomerWrite, KYCRead, KYCCreate, KYCUpdate, KYCVerify, KYCReassess, TransactionCreate, TransactionRead, RiskFlagCreate, RiskFlagRead, RiskFlagInvestigate, RiskFlagResolve, DashboardRead, AnalysisRead, StoreRead),
+	Supervisor:        set(ProfileRead, ProfileUpdate, CustomerRead, CustomerCreate, KYCCreate, TransactionCreate, TransactionRead, RiskFlagCreate, RiskFlagRead, DashboardRead, AnalysisRead, StoreRead, StoreManageMembers),
 	// Local : l'administrateur garde l'accès aux écrans métier qu'il avait avant les stores.
-	PlatformAdmin: set(ProfileRead, ProfileUpdate, PlatformManageStores, TraderManage, CustomerRead, CustomerCreate, CustomerUpdate, CustomerWrite, KYCRead, KYCDocumentRead, TransactionCreate, TransactionRead, RiskFlagRead, RiskFlagDelete, DashboardRead, AnalysisRead),
+	PlatformAdmin: set(ProfileRead, ProfileUpdate, PlatformManageStores, TraderManage, CustomerRead, CustomerUpdate, CustomerWrite, KYCRead, KYCDocumentRead, TransactionRead, RiskFlagRead, RiskFlagDelete, DashboardRead, AnalysisRead),
 }
 
 func set(values ...string) map[string]struct{} {
